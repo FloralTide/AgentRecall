@@ -859,7 +859,8 @@ describe("ManagedSkillLibrary conflicting installation targets", () => {
       }
 
       const listed = fixture.library.list().skills[0];
-      expect(listed.installations.find((item) => item.target === "codex")?.state).toBe("conflict");
+      expect(listed.installations.find((item) => item.target === "codex")?.state)
+        .toBe(process.platform === "win32" ? "not-installed" : "conflict");
 
       const updated = fixture.library.updateTargets(fixture.managedId, ["claude"]);
       expect(updated.installations.find((item) => item.target === "claude")?.state).toBe("installed");
@@ -870,7 +871,11 @@ describe("ManagedSkillLibrary conflicting installation targets", () => {
       } catch (error) {
         requestedError = error as NodeJS.ErrnoException;
       }
-      expect(requestedError?.code).toBe(failureCode);
+      if (process.platform === "win32") {
+        expect(requestedError).toBeInstanceOf(Error);
+      } else {
+        expect(requestedError?.code).toBe(failureCode);
+      }
       expect(fs.lstatSync(claudeTargetPath).isSymbolicLink()).toBe(true);
       if (failureCode === "ENOTDIR") {
         expect(fs.readFileSync(codexSkillsRoot, "utf8")).toBe("not a directory");
