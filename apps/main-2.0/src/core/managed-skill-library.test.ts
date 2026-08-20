@@ -186,6 +186,39 @@ describe("ManagedSkillLibrary conflicting installation targets", () => {
       entry.includes(".agent-recall-backup-"))).toBe(false);
   });
 
+  it("rejects divergent targets whose parent directories alias the same physical entry", () => {
+    const fixture = createManagedSkillFixture();
+    const codexSkillsParent = path.join(fixture.homeDir, ".codex", "skills");
+    const sharedSkillsParent = path.join(fixture.homeDir, ".agents", "skills");
+    const sharedTargetPath = path.join(sharedSkillsParent, fixture.managedId);
+    fs.mkdirSync(sharedSkillsParent, { recursive: true });
+    fs.mkdirSync(path.dirname(codexSkillsParent), { recursive: true });
+    fs.symlinkSync(
+      sharedSkillsParent,
+      codexSkillsParent,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    expect(() => fixture.library.updateTargets(fixture.managedId, ["codex"]))
+      .toThrow("resolve to the same path");
+    expect(fs.existsSync(sharedTargetPath)).toBe(false);
+
+    fs.symlinkSync(
+      fixture.managedSkillPath,
+      sharedTargetPath,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const aliasedInstallations = fixture.library.list().skills[0].installations;
+    expect(aliasedInstallations.find((item) => item.target === "codex")?.state).toBe("installed");
+    expect(aliasedInstallations.find((item) => item.target === "codex-shared")?.state).toBe("installed");
+
+    expect(() => fixture.library.updateTargets(fixture.managedId, ["codex-shared"]))
+      .toThrow("resolve to the same path");
+    expect(fs.lstatSync(sharedTargetPath).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(sharedTargetPath)).toBe(fs.realpathSync(fixture.managedSkillPath));
+    expect(fs.readdirSync(sharedSkillsParent)).toEqual([fixture.managedId]);
+  });
+
   it("installs a normal target and force replaces a conflicting target in one update", () => {
     const fixture = createManagedSkillFixture();
     const codexTargetPath = path.join(fixture.homeDir, ".codex", "skills", fixture.managedId);

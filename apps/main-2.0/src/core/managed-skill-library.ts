@@ -283,23 +283,41 @@ export class ManagedSkillLibrary {
         || (installation.state === "conflict" && requestedForceTargets.has(installation.target))
       ));
     const managedSkillRealPath = fs.realpathSync(skill.directoryPath);
-    const physicalTargetPaths = new Map<SkillInstallTarget, string>();
-    const physicalEntries = new Map<string, SkillInstallTarget>();
-    for (const installation of [...pathsToStage, ...linksToCreate]) {
-      if (physicalTargetPaths.has(installation.target)) continue;
-      const physicalTargetPath = physicalEntryPath(installation.path);
-      if (pathsOverlap(physicalTargetPath, managedSkillRealPath, this.platform)) {
-        throw new Error(`Refusing to update an overlapping managed Skill target at ${installation.path}.`);
+    const physicalTargetPaths = new Map<SkillInstallTarget, { path: string; key: string }>();
+    const physicalAliases = new Map<string, ManagedSkillInstallation[]>();
+    for (const installation of installations) {
+      let physicalTargetPath: string;
+      try {
+        physicalTargetPath = physicalEntryPath(installation.path);
+      } catch (error) {
+        if (requestedTargets.has(installation.target) || installation.state === "installed") throw error;
+        continue;
       }
       const physicalTargetKey = comparablePath(physicalTargetPath, this.platform);
-      const existingTarget = physicalEntries.get(physicalTargetKey);
-      if (existingTarget) {
+      physicalTargetPaths.set(installation.target, { path: physicalTargetPath, key: physicalTargetKey });
+      const aliases = physicalAliases.get(physicalTargetKey) ?? [];
+      aliases.push(installation);
+      physicalAliases.set(physicalTargetKey, aliases);
+    }
+    for (const aliases of physicalAliases.values()) {
+      if (
+        aliases.length > 1
+        && aliases.some((installation) =>
+          requestedTargets.has(installation.target) || installation.state === "installed")
+      ) {
         throw new Error(
-          `Refusing to update Skill targets ${existingTarget} and ${installation.target} because they resolve to the same path.`,
+          `Refusing to update Skill targets ${aliases.map((installation) => installation.target).join(", ")} because they resolve to the same path.`,
         );
       }
-      physicalEntries.set(physicalTargetKey, installation.target);
-      physicalTargetPaths.set(installation.target, physicalTargetKey);
+    }
+    for (const installation of [...pathsToStage, ...linksToCreate]) {
+      const physicalTarget = physicalTargetPaths.get(installation.target);
+      if (!physicalTarget) {
+        throw new Error(`Cannot resolve the physical path of Skill target ${installation.target}.`);
+      }
+      if (pathsOverlap(physicalTarget.path, managedSkillRealPath, this.platform)) {
+        throw new Error(`Refusing to update an overlapping managed Skill target at ${installation.path}.`);
+      }
     }
 
     const createdLinks: ManagedSkillInstallation[] = [];
@@ -307,7 +325,7 @@ export class ManagedSkillLibrary {
       for (const installation of pathsToStage) {
         if (
           comparablePath(physicalEntryPath(installation.path), this.platform)
-          !== physicalTargetPaths.get(installation.target)
+          !== physicalTargetPaths.get(installation.target)?.key
         ) {
           throw new Error(`Refusing to update a ${installation.target} Skill target whose parent path changed.`);
         }
@@ -332,7 +350,7 @@ export class ManagedSkillLibrary {
         fs.mkdirSync(path.dirname(installation.path), { recursive: true });
         if (
           comparablePath(physicalEntryPath(installation.path), this.platform)
-          !== physicalTargetPaths.get(installation.target)
+          !== physicalTargetPaths.get(installation.target)?.key
         ) {
           throw new Error(`Refusing to install a ${installation.target} Skill target whose parent path changed.`);
         }
