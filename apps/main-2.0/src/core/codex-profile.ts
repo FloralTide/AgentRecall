@@ -299,13 +299,17 @@ async function resolveCodexCredential(options: {
   if (explicitKey) return { apiKey: explicitKey, source: options.explicitSource || "API key field" };
 
   const commandAuth = options.providerId ? readCodexCommandAuth(options.configText, options.providerId) : null;
+  let configuredCommandSource: string | null = null;
   if (commandAuth) {
     const source = `config.toml ${options.providerId}.auth.command`;
-    if (options.executeCredentialHelper !== true) return { apiKey: "", source, configured: true };
-    return {
-      apiKey: await runProviderCredentialCommand(commandAuth),
-      source,
-    };
+    if (options.executeCredentialHelper !== true) {
+      configuredCommandSource = source;
+    } else {
+      return {
+        apiKey: await runProviderCredentialCommand(commandAuth),
+        source,
+      };
+    }
   }
 
   const section = options.providerId ? readTomlSection(options.configText, modelProviderSection(options.providerId)) : "";
@@ -346,6 +350,9 @@ async function resolveCodexCredential(options: {
     if (dotEnv[key]) return { apiKey: dotEnv[key], source: `.env ${key}` };
   }
 
+  // A configured helper belongs to this provider. Report it before considering sibling
+  // providers, but only after checking readable credentials owned by this provider.
+  if (configuredCommandSource) return { apiKey: "", source: configuredCommandSource, configured: true };
   if (options.allowOtherProviders === false) return { apiKey: "", source: null };
   return borrowCodexCredentialFromOtherProviders(options);
 }
@@ -525,44 +532,57 @@ async function applyGeneratedCodexProvider(options: {
 
   if (!apiConfig.customBaseUrl) throw new Error(`Base URL is required to apply ${apiConfig.customProviderName}.`);
 
-  await mkdir(backupDir, { recursive: true });
-  const backupPaths = await backupExistingTargets([
-    { target: authTarget, backup: path.join(backupDir, `auth.json.before-${providerId}-${stamp}`) },
-    { target: configTarget, backup: path.join(backupDir, `config.toml.before-${providerId}-${stamp}`) },
-  ]);
-
   const activeConfigText = await readOptionalFile(configTarget);
-  const credential = await resolveCodexCredential({
-    codexHome,
-    configText: activeConfigText,
-    providerId,
-    explicitKey: apiConfig.customApiKey,
-    // Applying a route must never turn a short-lived helper token into a persisted API key.
-    executeCredentialHelper: false,
-  });
-  if (!credential.apiKey) throw new Error(`No API key was found for ${apiConfig.customProviderName}.`);
+  const commandAuth = readCodexCommandAuth(activeConfigText, providerId);
+  // An existing helper remains authoritative unless the user explicitly enters a replacement
+  // key. In particular, never persist a generic environment/auth.json fallback for this route.
+  const useCommandAuth = Boolean(commandAuth && !apiConfig.customApiKey.trim());
+  const credential: ResolvedCodexCredential = useCommandAuth
+    ? {
+        apiKey: "",
+        source: `config.toml ${providerId}.auth.command`,
+        configured: true,
+      }
+    : await resolveCodexCredential({
+        codexHome,
+        configText: activeConfigText,
+        providerId,
+        explicitKey: apiConfig.customApiKey,
+        // Applying a route must never turn a short-lived helper token into a persisted API key.
+        executeCredentialHelper: false,
+      });
+  if (!useCommandAuth && !credential.apiKey) throw new Error(`No API key was found for ${apiConfig.customProviderName}.`);
   const effectiveConfig = { ...apiConfig, customApiKey: credential.apiKey };
   const baseConfigText = activeConfigText.trim() ? activeConfigText : generatedCodexConfig(effectiveConfig, providerId);
   const expectedBaseUrl = apiConfig.customApiFormat === "openai_chat" && options.chatProxyBaseUrl
     ? options.chatProxyBaseUrl
     : apiConfig.customBaseUrl;
 
-  // A `requires_openai_auth` provider reads its bearer token from auth.json, so writing
-  // config.toml alone leaves Codex itself without a usable credential.
-  const previousAuthText = await readOptionalFile(authTarget);
-  await writeVerifiedConfig({
-    targetPath: authTarget,
-    contents: codexAuthJson(previousAuthText, credential.apiKey),
-    verify: async () => {
-      const written = readCodexAuthKeys(await readOptionalFile(authTarget));
-      if (written[OFFICIAL_CODEX_AUTH_ENV_KEY] !== credential.apiKey) throw new Error("auth.json credential was not written");
-    },
-  });
+  await mkdir(backupDir, { recursive: true });
+  const backupPaths = await backupExistingTargets([
+    ...(!useCommandAuth ? [{ target: authTarget, backup: path.join(backupDir, `auth.json.before-${providerId}-${stamp}`) }] : []),
+    { target: configTarget, backup: path.join(backupDir, `config.toml.before-${providerId}-${stamp}`) },
+  ]);
+
+  let previousAuthText = "";
+  if (!useCommandAuth) {
+    // A `requires_openai_auth` provider reads its bearer token from auth.json, so writing
+    // config.toml alone leaves Codex itself without a usable credential.
+    previousAuthText = await readOptionalFile(authTarget);
+    await writeVerifiedConfig({
+      targetPath: authTarget,
+      contents: codexAuthJson(previousAuthText, credential.apiKey),
+      verify: async () => {
+        const written = readCodexAuthKeys(await readOptionalFile(authTarget));
+        if (written[OFFICIAL_CODEX_AUTH_ENV_KEY] !== credential.apiKey) throw new Error("auth.json credential was not written");
+      },
+    });
+  }
 
   try {
     await writeVerifiedConfig({
       targetPath: configTarget,
-      contents: applyCodexProviderConfig(baseConfigText, effectiveConfig, providerId, options.chatProxyBaseUrl),
+      contents: applyCodexProviderConfig(baseConfigText, effectiveConfig, providerId, options.chatProxyBaseUrl, useCommandAuth),
       verify: async () => {
         const snapshot = await loadCodexConfigSnapshot(codexHome);
         const provider = snapshot.providers.find((item) => item.id === providerId);
@@ -577,11 +597,13 @@ async function applyGeneratedCodexProvider(options: {
       },
     });
   } catch (error) {
-    if (previousAuthText) await writeFile(authTarget, previousAuthText, { mode: 0o600 });
-    else await rm(authTarget, { force: true });
+    if (!useCommandAuth) {
+      if (previousAuthText) await writeFile(authTarget, previousAuthText, { mode: 0o600 });
+      else await rm(authTarget, { force: true });
+    }
     throw error;
   }
-  await chmodIfExists(authTarget, 0o600);
+  if (!useCommandAuth) await chmodIfExists(authTarget, 0o600);
   await chmod(configTarget, 0o600);
 
   return {
@@ -629,7 +651,13 @@ function applyCodexOfficialConfigOverrides(text: string): string {
   return next.endsWith("\n") ? next : `${next}\n`;
 }
 
-function applyCodexProviderConfig(text: string, apiConfig: ApiConfig, providerId: string, chatProxyBaseUrl?: string): string {
+function applyCodexProviderConfig(
+  text: string,
+  apiConfig: ApiConfig,
+  providerId: string,
+  chatProxyBaseUrl?: string,
+  useCommandAuth = false,
+): string {
   const baseUrl = apiConfig.customApiFormat === "openai_chat" && chatProxyBaseUrl ? chatProxyBaseUrl : apiConfig.customBaseUrl;
   let next = removeTopLevelTomlKey(text, "experimental_bearer_token");
   next = replaceTopLevelString(next, "model_provider", providerId);
@@ -638,9 +666,17 @@ function applyCodexProviderConfig(text: string, apiConfig: ApiConfig, providerId
   next = replaceOrInsertSectionString(next, sectionHeader, "name", apiConfig.customProviderName);
   if (baseUrl) next = replaceOrInsertSectionString(next, sectionHeader, "base_url", baseUrl);
   next = replaceOrInsertSectionString(next, sectionHeader, "wire_api", "responses");
-  next = replaceOrInsertSectionLiteral(next, sectionHeader, "requires_openai_auth", "true");
-  if (apiConfig.customApiKey) {
-    next = replaceOrInsertSectionString(next, sectionHeader, "experimental_bearer_token", apiConfig.customApiKey);
+  const authSectionHeader = `${sectionHeader.slice(0, -1)}.auth]`;
+  if (useCommandAuth) {
+    for (const key of ["requires_openai_auth", "env_key", "experimental_bearer_token"]) {
+      next = removeTomlSectionKey(next, sectionHeader, key);
+    }
+  } else {
+    next = removeTomlSection(next, authSectionHeader);
+    next = replaceOrInsertSectionLiteral(next, sectionHeader, "requires_openai_auth", "true");
+    if (apiConfig.customApiKey) {
+      next = replaceOrInsertSectionString(next, sectionHeader, "experimental_bearer_token", apiConfig.customApiKey);
+    }
   }
   return next.endsWith("\n") ? next : `${next}\n`;
 }
@@ -765,6 +801,29 @@ function removeTopLevelTomlKey(text: string, key: string): string {
       return !(inTopLevel && pattern.test(line));
     })
     .join("\n");
+}
+
+function removeTomlSectionKey(text: string, sectionHeader: string, key: string): string {
+  const lines = text.split(/\r?\n/);
+  const sectionStart = lines.findIndex((line) => line.trim() === sectionHeader);
+  if (sectionStart < 0) return text;
+  let sectionEnd = lines.findIndex((line, index) => index > sectionStart && /^\s*\[/.test(line));
+  if (sectionEnd < 0) sectionEnd = lines.length;
+  const pattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=`);
+  for (let index = sectionEnd - 1; index > sectionStart; index -= 1) {
+    if (pattern.test(lines[index])) lines.splice(index, 1);
+  }
+  return lines.join("\n");
+}
+
+function removeTomlSection(text: string, sectionHeader: string): string {
+  const lines = text.split(/\r?\n/);
+  const sectionStart = lines.findIndex((line) => line.trim() === sectionHeader);
+  if (sectionStart < 0) return text;
+  let sectionEnd = lines.findIndex((line, index) => index > sectionStart && /^\s*\[/.test(line));
+  if (sectionEnd < 0) sectionEnd = lines.length;
+  lines.splice(sectionStart, sectionEnd - sectionStart);
+  return lines.join("\n");
 }
 
 function replaceOrInsertSectionString(text: string, sectionHeader: string, key: string, value: string): string {

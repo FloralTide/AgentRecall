@@ -349,6 +349,211 @@ describe("codex profile switching", () => {
     });
   });
 
+  it("keeps resolving readable credentials when command execution is disabled", async () => {
+    await withCodexHome(async (codexHome) => {
+      await writeFile(
+        path.join(codexHome, "config.toml"),
+        [
+          "[model_providers.gateway]",
+          'api_key = "inline-key"',
+          "",
+          "[model_providers.gateway.auth]",
+          'command = "agent-recall-helper-must-not-run"',
+        ].join("\n"),
+      );
+
+      await expect(resolveCodexProviderCredential({
+        codexHome,
+        providerId: "gateway",
+        executeCredentialHelper: false,
+      })).resolves.toEqual({
+        apiKey: "inline-key",
+        source: "config.toml gateway.api_key",
+      });
+
+      await writeFile(
+        path.join(codexHome, "config.toml"),
+        [
+          "[model_providers.gateway]",
+          "",
+          "[model_providers.gateway.auth]",
+          'command = "agent-recall-helper-must-not-run"',
+        ].join("\n"),
+      );
+      await writeFile(path.join(codexHome, "auth.json"), '{"OPENAI_API_KEY":"auth-file-key"}\n');
+
+      await expect(resolveCodexProviderCredential({
+        codexHome,
+        providerId: "gateway",
+        executeCredentialHelper: false,
+      })).resolves.toEqual({
+        apiKey: "auth-file-key",
+        source: "auth.json OPENAI_API_KEY",
+      });
+    });
+  });
+
+  it("does not borrow a sibling key for a provider with command auth", async () => {
+    await withCodexHome(async (codexHome) => {
+      await writeFile(
+        path.join(codexHome, "config.toml"),
+        [
+          "[model_providers.gateway]",
+          "",
+          "[model_providers.gateway.auth]",
+          'command = "agent-recall-helper-must-not-run"',
+          "",
+          "[model_providers.sibling]",
+          'api_key = "sibling-key"',
+        ].join("\n"),
+      );
+
+      await expect(resolveCodexProviderCredential({
+        codexHome,
+        providerId: "gateway",
+        executeCredentialHelper: false,
+      })).resolves.toMatchObject({
+        apiKey: "",
+        source: "config.toml gateway.auth.command",
+      });
+    });
+  });
+
+  it("applies a command-backed provider without executing or replacing its helper", async () => {
+    await withCodexHome(async (codexHome) => {
+      const authJson = '{"OPENAI_API_KEY":"unrelated-login-key","tokens":{"keep":true}}\n';
+      await writeFile(path.join(codexHome, "auth.json"), authJson);
+      await writeFile(
+        path.join(codexHome, "config.toml"),
+        [
+          'model_provider = "gateway"',
+          'model = "old-model"',
+          "",
+          "[model_providers.gateway]",
+          'name = "Old Gateway"',
+          'base_url = "https://old.example/v1"',
+          'wire_api = "responses"',
+          "requires_openai_auth = true",
+          'env_key = "OPENAI_API_KEY"',
+          'experimental_bearer_token = "stale-inline-key"',
+          "",
+          "[model_providers.gateway.auth]",
+          'command = "agent-recall-helper-must-not-run"',
+          'args = ["token", "--json"]',
+          `cwd = ${JSON.stringify(codexHome)}`,
+          "timeout_ms = 4321",
+          "",
+          "[mcp_servers.echo]",
+          'command = "echo"',
+        ].join("\n"),
+      );
+
+      const result = await applyCodexApiConfig({
+        codexHome,
+        apiConfig: {
+          activeProvider: "custom",
+          customProviderId: "gateway",
+          customProviderName: "Gateway",
+          customBaseUrl: "https://new.example/v1",
+          customApiKey: "",
+          customModel: "new-model",
+          customApiFormat: "openai_responses",
+        },
+      });
+
+      const config = await readFile(path.join(codexHome, "config.toml"), "utf8");
+      expect(config).toContain('model_provider = "gateway"');
+      expect(config).toContain('model = "new-model"');
+      expect(config).toContain('name = "Gateway"');
+      expect(config).toContain('base_url = "https://new.example/v1"');
+      expect(config).not.toContain("requires_openai_auth");
+      expect(config).not.toContain("env_key");
+      expect(config).not.toContain("experimental_bearer_token");
+      expect(config).toContain("[model_providers.gateway.auth]");
+      expect(config).toContain('command = "agent-recall-helper-must-not-run"');
+      expect(config).toContain('args = ["token", "--json"]');
+      expect(config).toContain(`cwd = ${JSON.stringify(codexHome)}`);
+      expect(config).toContain("timeout_ms = 4321");
+      expect(config).toContain("[mcp_servers.echo]");
+      await expect(readFile(path.join(codexHome, "auth.json"), "utf8")).resolves.toBe(authJson);
+      expect(result).toMatchObject({
+        profile: "gateway",
+        credentialSource: "config.toml gateway.auth.command",
+        verified: true,
+      });
+      expect(result.backupPaths).toHaveLength(1);
+    });
+  });
+
+  it("does not create auth.json from a generic environment key for command auth", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "unrelated-environment-key");
+    await withCodexHome(async (codexHome) => {
+      await writeFile(
+        path.join(codexHome, "config.toml"),
+        [
+          "[model_providers.gateway]",
+          'base_url = "https://old.example/v1"',
+          "",
+          "[model_providers.gateway.auth]",
+          'command = "agent-recall-helper-must-not-run"',
+        ].join("\n"),
+      );
+
+      await applyCodexApiConfig({
+        codexHome,
+        apiConfig: {
+          activeProvider: "custom",
+          customProviderId: "gateway",
+          customProviderName: "Gateway",
+          customBaseUrl: "https://new.example/v1",
+          customApiKey: "",
+          customModel: "new-model",
+          customApiFormat: "openai_responses",
+        },
+      });
+
+      await expect(readFile(path.join(codexHome, "auth.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it("removes command auth when the user explicitly replaces it with an API key", async () => {
+    await withCodexHome(async (codexHome) => {
+      await writeFile(
+        path.join(codexHome, "config.toml"),
+        [
+          "[model_providers.gateway]",
+          'base_url = "https://old.example/v1"',
+          "",
+          "[model_providers.gateway.auth]",
+          'command = "agent-recall-helper-must-not-run"',
+          'args = ["token"]',
+        ].join("\n"),
+      );
+
+      await applyCodexApiConfig({
+        codexHome,
+        apiConfig: {
+          activeProvider: "custom",
+          customProviderId: "gateway",
+          customProviderName: "Gateway",
+          customBaseUrl: "https://new.example/v1",
+          customApiKey: "explicit-key",
+          customModel: "new-model",
+          customApiFormat: "openai_responses",
+        },
+      });
+
+      const config = await readFile(path.join(codexHome, "config.toml"), "utf8");
+      expect(config).not.toContain("[model_providers.gateway.auth]");
+      expect(config).not.toContain("agent-recall-helper-must-not-run");
+      expect(config).toContain("requires_openai_auth = true");
+      expect(config).toContain('experimental_bearer_token = "explicit-key"');
+      await expect(readFile(path.join(codexHome, "auth.json"), "utf8")).resolves.toContain(
+        '"OPENAI_API_KEY": "explicit-key"',
+      );
+    });
+  });
+
   it("probes with the bearer token returned by a Codex auth command", async () => {
     await withCodexHome(async (codexHome) => {
       await writeFile(path.join(codexHome, "command-token.txt"), "command-key\n");
