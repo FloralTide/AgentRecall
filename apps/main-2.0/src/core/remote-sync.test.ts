@@ -50,7 +50,7 @@ describe("remote sync", () => {
             id: childId,
             session_id: parentId,
             forked_from_id: parentId,
-            cwd: "/workspace/child",
+            cwd: "<local-workspace>",
             thread_source: "subagent",
             parent_thread_id: parentId,
             source: {
@@ -61,6 +61,15 @@ describe("remote sync", () => {
                 },
               },
             },
+          },
+        },
+        {
+          type: "session_meta",
+          timestamp: "2026-08-20T06:33:30.000Z",
+          payload: {
+            id: childId,
+            session_id: parentId,
+            cwd: "/workspace/child",
           },
         },
         {

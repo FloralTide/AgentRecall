@@ -1161,6 +1161,10 @@ def title_from(text):
   lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
   return (lines[0] if lines else text.strip())[:120]
 
+def usable_codex_project_path(value):
+  normalized = value.strip() if isinstance(value, str) else ""
+  return bool(normalized) and re.fullmatch(r"<[^>]+>", normalized) is None
+
 def load_codex_titles(config_dir):
   titles = {}
   index_path = home / config_dir / "session_index.jsonl"
@@ -1209,6 +1213,7 @@ def emit_codex_summary(path, stat, titles, source):
   raw_id = path.stem
   project_path = ""
   timestamp = int(stat.st_mtime * 1000)
+  # Child rollouts may repeat inherited parent metadata; the first valid identity owns the file.
   session_identity_found = False
   session_timestamp_found = False
   first_question = ""
@@ -1240,8 +1245,9 @@ def emit_codex_summary(path, stat, titles, source):
                 raw_id = session_id
                 session_identity_found = True
               if session_id == raw_id:
-                if not project_path and isinstance(payload.get("cwd"), str):
-                  project_path = payload.get("cwd")
+                candidate_project_path = payload.get("cwd")
+                if not usable_codex_project_path(project_path) and isinstance(candidate_project_path, str):
+                  project_path = candidate_project_path
                 git = payload.get("git")
                 if not git_branch and isinstance(git, dict) and isinstance(git.get("branch"), str):
                   git_branch = git.get("branch")
@@ -1267,8 +1273,9 @@ def emit_codex_summary(path, stat, titles, source):
           if row.get("id") == raw_id:
             git = row.get("git")
             if isinstance(git, dict):
-              if not project_path and isinstance(git.get("cwd"), str):
-                project_path = git.get("cwd")
+              candidate_project_path = git.get("cwd")
+              if not usable_codex_project_path(project_path) and isinstance(candidate_project_path, str):
+                project_path = candidate_project_path
               if not git_branch and isinstance(git.get("branch"), str):
                 git_branch = git.get("branch")
             parsed_timestamp = _iso_timestamp_ms(row.get("timestamp"))

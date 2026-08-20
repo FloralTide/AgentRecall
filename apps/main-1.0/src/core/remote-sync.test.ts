@@ -225,13 +225,18 @@ describe("remote sync", () => {
           payload: {
             id: childId,
             session_id: parentId,
-            cwd: "/repo/child",
+            cwd: "<local-workspace>",
             source: { subagent: { thread_spawn: { parent_thread_id: parentId, depth: 1 } } },
             thread_source: "subagent",
             parent_thread_id: parentId,
           },
         },
         message("child task"),
+        {
+          type: "session_meta",
+          timestamp: "2026-08-20T06:32:00Z",
+          payload: { id: childId, cwd: "/repo/child" },
+        },
         {
           type: "session_meta",
           timestamp: inheritedAt,
