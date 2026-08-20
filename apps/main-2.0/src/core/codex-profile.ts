@@ -184,11 +184,11 @@ export async function loadCodexConfigSnapshot(configuredHome?: string): Promise<
 
 export async function probeCodexModels(input: CodexModelProbeInput, fetchImpl: ProviderModelsFetch = fetch): Promise<CodexModelProbeResult> {
   const providerId = input.providerId || await readActiveCodexProviderId(input.codexHome);
+  const explicitKey = input.apiKey.trim();
   // Always consult the Codex config: a manually typed Custom route has no section of
   // its own, and the summary route falls back to whatever Codex is already using.
-  const configProvider = await readCodexConfigProviderSecret(providerId, input.codexHome, true);
+  const configProvider = await readCodexConfigProviderSecret(providerId, input.codexHome, !explicitKey);
   const baseUrl = normalizeBaseUrl(input.baseUrl || configProvider?.baseUrl || "");
-  const explicitKey = input.apiKey.trim();
   const apiKey = explicitKey || configProvider?.apiKey || "";
   const result = await probeProviderModels({ baseUrl, apiKey }, fetchImpl);
   return {

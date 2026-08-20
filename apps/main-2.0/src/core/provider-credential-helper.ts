@@ -14,8 +14,8 @@ export interface ProviderCredentialCommand {
 
 /**
  * Runs a provider-owned credential helper without stdin and keeps its output out of errors.
- * Credential commands are only invoked from explicit probe/apply actions, never while rendering
- * a config snapshot.
+ * Credential commands are only invoked from explicit connection probes, never while rendering
+ * a config snapshot or applying a route.
  */
 export function runProviderCredentialCommand(spec: ProviderCredentialCommand): Promise<string> {
   const command = spec.command.trim();

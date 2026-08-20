@@ -601,6 +601,51 @@ describe("codex profile switching", () => {
     });
   });
 
+  it("uses an explicit probe key without executing the configured auth command", async () => {
+    await withCodexHome(async (codexHome) => {
+      const markerPath = path.join(codexHome, "probe-helper-ran");
+      const helperArgs = [
+        "-e",
+        `require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "ran"); process.stdout.write("command-key")`,
+      ];
+      await writeFile(
+        path.join(codexHome, "config.toml"),
+        [
+          'model_provider = "gateway"',
+          "",
+          "[model_providers.gateway]",
+          'base_url = "https://api.example/v1"',
+          "",
+          "[model_providers.gateway.auth]",
+          `command = ${JSON.stringify(process.execPath)}`,
+          `args = ${JSON.stringify(helperArgs)}`,
+          `cwd = ${JSON.stringify(codexHome)}`,
+        ].join("\n"),
+      );
+
+      const result = await probeCodexModels(
+        {
+          baseUrl: "",
+          apiKey: "explicit-key",
+          apiKeySource: "API key field",
+          providerId: "gateway",
+          codexHome,
+        },
+        async (url, init) => {
+          expect(String(url)).toBe("https://api.example/v1/models");
+          expect(init?.headers?.Authorization).toBe("Bearer explicit-key");
+          return { ok: true, status: 200, async json() { return { data: [{ id: "gateway-model" }] }; } };
+        },
+      );
+
+      expect(result).toMatchObject({
+        models: ["gateway-model"],
+        credentialSource: "API key field",
+      });
+      await expect(readFile(markerPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
   it("prefers the configured provider env_key over an unrelated auth.json login", async () => {
     vi.stubEnv("DMS_API_KEY", "provider-env-key");
     await withCodexHome(async (codexHome) => {
