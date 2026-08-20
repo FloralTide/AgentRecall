@@ -1948,6 +1948,7 @@ export function App(): ReactElement {
                 revealLabel={FILE_MANAGER_LABEL}
                 onRefresh={() => void skills.load({ refreshUsage: true })}
                 onEnsureLocalLoaded={skills.ensureLocalLoaded}
+                onRefreshLoadedLocal={skills.refreshLoadedLocal}
                 onRefreshLocal={() => void skills.refreshLocal()}
                 onUpload={(skill, force) => skills.upload(skill, force)}
                 onUploadSelected={(selectedSkills) => skills.uploadSelected(selectedSkills)}

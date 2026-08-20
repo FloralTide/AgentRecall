@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import { Compass, RefreshCw, Upload, X } from "lucide-react";
 import type { InstalledSkill, InstalledSkillsSnapshot, SkillRootStatus, SkillSource } from "../../../../core/skill-manager";
@@ -31,6 +31,7 @@ export function SkillsPage({
   revealLabel,
   onRefresh,
   onEnsureLocalLoaded,
+  onRefreshLoadedLocal,
   onRefreshLocal,
   onUpload,
   onUploadSelected,
@@ -56,6 +57,7 @@ export function SkillsPage({
   revealLabel: string;
   onRefresh: () => void;
   onEnsureLocalLoaded: () => void;
+  onRefreshLoadedLocal: () => void;
   onRefreshLocal: () => void;
   onUpload: (skill: InstalledSkill, force?: boolean) => Promise<SkillSyncUploadOutcome | null>;
   onUploadSelected: (skills: InstalledSkill[]) => Promise<{ remainingSkillIds: string[] }>;
@@ -112,6 +114,13 @@ export function SkillsPage({
       : [])),
     [managedSkills],
   );
+  const refreshedLocalOnMountRef = useRef(false);
+
+  useEffect(() => {
+    if (refreshedLocalOnMountRef.current) return;
+    refreshedLocalOnMountRef.current = true;
+    onRefreshLoadedLocal();
+  }, [onRefreshLoadedLocal]);
 
   useEffect(() => {
     if (selectedRemoteFingerprint) {

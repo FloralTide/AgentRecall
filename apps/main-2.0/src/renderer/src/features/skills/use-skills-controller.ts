@@ -38,6 +38,7 @@ export function useSkillsController(language: LanguageMode): {
   load(options?: { refreshUsage?: boolean; silent?: boolean }): Promise<void>;
   ensureLoaded(): void;
   ensureLocalLoaded(): void;
+  refreshLoadedLocal(): void;
   refreshLocal(): Promise<void>;
   deleteSkill(skill: InstalledSkill): Promise<void>;
   upload(skill: InstalledSkill, force?: boolean): Promise<SkillSyncUploadOutcome | null>;
@@ -58,6 +59,7 @@ export function useSkillsController(language: LanguageMode): {
   const loadSequenceRef = useRef(0);
   const localSnapshotRef = useRef<InstalledSkillsSnapshot | null>(null);
   const localLoadPromiseRef = useRef<Promise<void> | null>(null);
+  const localLoadErrorVisibleRef = useRef(true);
   const t = useCallback(
     (en: string, zh: string) => localize(language, en, zh),
     [language],
@@ -147,18 +149,25 @@ export function useSkillsController(language: LanguageMode): {
     if (!loadedRef.current) void load({ silent: true });
   }, [load]);
 
-  const loadLocal = useCallback((forceRefresh: boolean): Promise<void> => {
-    if (!forceRefresh && localSnapshotRef.current) return Promise.resolve();
+  const loadLocal = useCallback((options: {
+    forceRefresh: boolean;
+    reloadCachedSnapshot?: boolean;
+  }): Promise<void> => {
+    if (!options.forceRefresh && localSnapshotRef.current && !options.reloadCachedSnapshot) {
+      return Promise.resolve();
+    }
     if (localLoadPromiseRef.current) return localLoadPromiseRef.current;
 
     setLocalLoading(true);
     setLocalError(null);
-    const request = window.sessionSearch.listSkillImportCandidates(forceRefresh)
+    localLoadErrorVisibleRef.current = true;
+    const request = window.sessionSearch.listSkillImportCandidates(options.forceRefresh)
       .then((nextSnapshot) => {
         localSnapshotRef.current = nextSnapshot;
         setLocalSnapshot(nextSnapshot);
       })
       .catch((error) => {
+        if (!localLoadErrorVisibleRef.current) return;
         setLocalError(error instanceof Error ? error.message : String(error));
       })
       .finally(() => {
@@ -171,11 +180,21 @@ export function useSkillsController(language: LanguageMode): {
   }, []);
 
   const ensureLocalLoaded = useCallback((): void => {
-    void loadLocal(false);
+    void loadLocal({ forceRefresh: false });
+  }, [loadLocal]);
+
+  const refreshLoadedLocal = useCallback((): void => {
+    if (!localSnapshotRef.current) return;
+    setLocalError(null);
+    if (localLoadPromiseRef.current) {
+      localLoadErrorVisibleRef.current = false;
+      return;
+    }
+    void loadLocal({ forceRefresh: false, reloadCachedSnapshot: true });
   }, [loadLocal]);
 
   const refreshLocal = useCallback(
-    (): Promise<void> => loadLocal(true),
+    (): Promise<void> => loadLocal({ forceRefresh: true }),
     [loadLocal],
   );
 
@@ -412,6 +431,7 @@ export function useSkillsController(language: LanguageMode): {
     load,
     ensureLoaded,
     ensureLocalLoaded,
+    refreshLoadedLocal,
     refreshLocal,
     deleteSkill,
     upload,
