@@ -341,10 +341,16 @@ export function ApiConfigDialog({
   const detectCodexModels = async () => {
     setCodexModelProbeStatus({ kind: "running", message: l("Detecting models...", "正在探测模型...") });
     try {
+      const configuredProviderId = selectedCodexConfigProviderId || codexConfig?.activeProviderId;
+      const configuredProvider = codexConfig?.providers.find((provider) => provider.id === configuredProviderId);
+      const providerId = configuredProvider
+        && normalizeProviderBaseUrl(configuredProvider.baseUrl) === normalizeProviderBaseUrl(draftApiConfig.customBaseUrl)
+        ? configuredProvider.id
+        : draftApiConfig.customProviderId;
       const result = await window.sessionSearch.probeCodexModels({
         baseUrl: draftApiConfig.customBaseUrl,
         apiKey: draftApiConfig.customApiKey,
-        providerId: selectedCodexConfigProviderId || codexConfig?.activeProviderId,
+        providerId,
         codexHome: draftApiConfig.customConfigDir || undefined,
         keyTarget: "codex",
       });
@@ -1721,7 +1727,11 @@ export function ApiConfigDialog({
                   value={summaryView.baseUrl}
                   disabled={!settings || saving || !summaryView.baseUrlEditable}
                   placeholder={summaryView.baseUrlPlaceholder}
-                  onChange={(event) => updateDraftSummaryApiConfig({ customBaseUrl: event.currentTarget.value })}
+                  onChange={(event) => updateDraftSummaryApiConfig({
+                    customProviderId: "custom",
+                    customBaseUrl: event.currentTarget.value,
+                    customApiKey: "",
+                  })}
                 />
               </label>
               <div className="settings-field" data-summary-row="model">

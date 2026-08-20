@@ -345,37 +345,102 @@ describe("ProviderService settings and keys", () => {
     ]);
   });
 
-  it("uses the selected saved key for model probing unless an explicit key is supplied", async () => {
+  it("uses a saved Codex key only for its exact route while allowing an explicit key", async () => {
     const settings = cloneSettings();
-    settings.apiConfig = customCodexConfig({ customProviderId: "deepseek" });
+    settings.apiConfig = customCodexConfig({
+      customProviderId: "deepseek",
+      customBaseUrl: "https://api.example/v1",
+    });
     const harness = createHarness(settings);
     harness.keys.set("codex:deepseek", "saved-key");
 
     await harness.service.probeCodexModels({
-      baseUrl: "https://api.example/v1",
+      baseUrl: "https://api.example/v1/",
       apiKey: "",
       providerId: "deepseek",
     });
     await harness.service.probeCodexModels({
-      baseUrl: "https://api.example/v1",
+      baseUrl: "https://other.example/v1",
+      apiKey: "",
+      providerId: "deepseek",
+    });
+    await harness.service.probeCodexModels({
+      baseUrl: "https://other.example/v1",
       apiKey: "explicit-key",
       providerId: "deepseek",
     });
 
     expect(harness.operations.probeCodexModels).toHaveBeenNthCalledWith(1, {
-      baseUrl: "https://api.example/v1",
+      baseUrl: "https://api.example/v1/",
       apiKey: "saved-key",
       providerId: "deepseek",
       codexHome: undefined,
       apiKeySource: "AgentRecall codex key store",
     });
     expect(harness.operations.probeCodexModels).toHaveBeenNthCalledWith(2, {
-      baseUrl: "https://api.example/v1",
+      baseUrl: "https://other.example/v1",
+      apiKey: "",
+      providerId: "deepseek",
+      codexHome: undefined,
+      apiKeySource: undefined,
+    });
+    expect(harness.operations.probeCodexModels).toHaveBeenNthCalledWith(3, {
+      baseUrl: "https://other.example/v1",
       apiKey: "explicit-key",
       providerId: "deepseek",
       codexHome: undefined,
       apiKeySource: "API key field",
     });
+  });
+
+  it("uses a saved Claude key only for its exact route while allowing an explicit key", async () => {
+    const settings = cloneSettings();
+    settings.claudeApiConfig = {
+      ...settings.claudeApiConfig,
+      activeProvider: "custom",
+      customProviderId: "gateway",
+      customBaseUrl: "https://api.example/anthropic",
+    };
+    const harness = createHarness(settings);
+    harness.keys.set("claude:gateway", "saved-key");
+
+    await harness.service.probeClaudeModels({
+      baseUrl: "https://api.example/anthropic/",
+      apiKey: "",
+      providerId: "gateway",
+      apiFormat: "anthropic",
+      apiKeyField: "ANTHROPIC_AUTH_TOKEN",
+    });
+    await harness.service.probeClaudeModels({
+      baseUrl: "https://other.example/anthropic",
+      apiKey: "",
+      providerId: "gateway",
+      apiFormat: "anthropic",
+      apiKeyField: "ANTHROPIC_AUTH_TOKEN",
+    });
+    await harness.service.probeClaudeModels({
+      baseUrl: "https://other.example/anthropic",
+      apiKey: "explicit-key",
+      providerId: "gateway",
+      apiFormat: "anthropic",
+      apiKeyField: "ANTHROPIC_AUTH_TOKEN",
+    });
+
+    expect(harness.operations.probeClaudeModels).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      apiKey: "saved-key",
+      providerId: "gateway",
+      apiKeySource: "AgentRecall claude key store",
+    }));
+    expect(harness.operations.probeClaudeModels).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      apiKey: "",
+      providerId: "gateway",
+      apiKeySource: undefined,
+    }));
+    expect(harness.operations.probeClaudeModels).toHaveBeenNthCalledWith(3, expect.objectContaining({
+      apiKey: "explicit-key",
+      providerId: "gateway",
+      apiKeySource: "API key field",
+    }));
   });
 
   it("loads defaults and snapshots from each saved custom config directory", async () => {
@@ -396,8 +461,16 @@ describe("ProviderService settings and keys", () => {
 
   it("keeps inherited and independent summary credentials isolated", async () => {
     const settings = cloneSettings();
-    settings.apiConfig = customCodexConfig({ customProviderId: "dms", customApiKey: "" });
-    settings.summaryApiConfig = customCodexConfig({ customProviderId: "dms", customApiKey: "" });
+    settings.apiConfig = customCodexConfig({
+      customProviderId: "dms",
+      customBaseUrl: "https://api.example/v1",
+      customApiKey: "",
+    });
+    settings.summaryApiConfig = customCodexConfig({
+      customProviderId: "dms",
+      customBaseUrl: "https://api.example/v1",
+      customApiKey: "",
+    });
     const harness = createHarness(settings);
     harness.keys.set("codex:dms", "codex-key");
     harness.keys.set("summary:dms", "summary-key");
@@ -431,11 +504,18 @@ describe("ProviderService settings and keys", () => {
     const settings = cloneSettings();
     settings.claudeApiConfig = {
       ...settings.claudeApiConfig,
+      activeProvider: "custom",
       customProviderId: "claude-tab-provider",
       customConfigDir: "/tmp/claude-tab",
+      customBaseUrl: "https://claude.example",
     };
     settings.summaryClaudeConfigDir = "/tmp/summary-claude";
-    settings.summaryApiConfig = { ...settings.summaryApiConfig, customProviderId: "summary-provider" };
+    settings.summaryApiConfig = {
+      ...settings.summaryApiConfig,
+      activeProvider: "custom",
+      customProviderId: "summary-provider",
+      customBaseUrl: "https://summary.example",
+    };
     const harness = createHarness(settings);
     harness.keys.set("claude:claude-tab-provider", "claude-tab-key");
     harness.keys.set("summary:summary-provider", "summary-key");
@@ -953,6 +1033,28 @@ describe("summary connection tests", () => {
     );
     expect(result.credentialSource).toBe("Codex CLI");
   });
+
+  it("does not reuse a summary key after the Base URL changes", async () => {
+    const settings = cloneSettings();
+    settings.summaryApiConfig = {
+      ...settings.summaryApiConfig,
+      activeProvider: "custom",
+      customProviderId: "custom",
+      customBaseUrl: "https://old.example/v1",
+    };
+    const harness = createHarness(settings);
+    harness.keys.set("summary:custom", "old-route-key");
+
+    await expect(harness.service.testSummaryProviderConnection({
+      source: "custom",
+      baseUrl: "https://new.example/v1",
+      apiKey: "",
+      model: "summary-model",
+      providerId: "custom",
+      apiFormat: "openai_chat",
+    })).rejects.toThrow(/API key is required/);
+    expect(harness.operations.requestSummaryCompletion).not.toHaveBeenCalled();
+  });
 });
 
 describe("ProviderService Codex Chat proxy lifecycle", () => {
@@ -972,6 +1074,7 @@ describe("ProviderService Codex Chat proxy lifecycle", () => {
     expect(harness.operations.resolveCodexProviderCredential).toHaveBeenCalledWith({
       codexHome: undefined,
       providerId: "deepseek",
+      baseUrl: "https://api.deepseek.com",
       preferConfiguredHelper: true,
     });
     expect(harness.operations.applyCodexApiConfig).toHaveBeenCalledWith({
@@ -1028,14 +1131,44 @@ describe("ProviderService Codex Chat proxy lifecycle", () => {
   });
 
   it("starts the chat proxy with a securely stored key when the form is blank", async () => {
-    const harness = createHarness();
+    const settings = cloneSettings();
+    settings.apiConfig = customCodexConfig({ customApiKey: "" });
+    const harness = createHarness(settings);
     harness.keys.set("codex:deepseek", "stored-key");
 
-    await harness.service.applyCodexProfile(customCodexConfig({ customApiKey: "" }));
+    await harness.service.applyCodexProfile(settings.apiConfig);
 
     expect(harness.operations.createCodexChatProxy).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "stored-key" }));
     expect(harness.operations.applyCodexApiConfig).toHaveBeenCalledWith(expect.objectContaining({
       apiConfig: expect.objectContaining({ customApiKey: "stored-key" }),
+    }));
+  });
+
+  it("does not inject a stored Codex key after the route Base URL changes", async () => {
+    const settings = cloneSettings();
+    settings.apiConfig = customCodexConfig({
+      customProviderId: "custom",
+      customBaseUrl: "https://old.example/v1",
+      customApiKey: "",
+      customApiFormat: "openai_responses",
+    });
+    const harness = createHarness(settings);
+    harness.keys.set("codex:custom", "old-route-key");
+
+    await harness.service.applyCodexProfile({
+      ...settings.apiConfig,
+      customBaseUrl: "https://new.example/v1",
+    });
+
+    expect(harness.operations.applyCodexApiConfig).toHaveBeenCalledWith({
+      apiConfig: expect.objectContaining({
+        customBaseUrl: "https://new.example/v1",
+        customApiKey: "",
+      }),
+    });
+    expect(harness.operations.resolveCodexProviderCredential).toHaveBeenCalledWith(expect.objectContaining({
+      providerId: "custom",
+      baseUrl: "https://new.example/v1",
     }));
   });
 });
@@ -1064,6 +1197,7 @@ describe("ProviderService Claude profile", () => {
       ...settings.claudeApiConfig,
       activeProvider: "custom",
       customProviderId: "dms",
+      customBaseUrl: "https://dms.example/anthropic",
       customApiKey: "",
     };
     const harness = createHarness(settings);
@@ -1073,6 +1207,31 @@ describe("ProviderService Claude profile", () => {
 
     expect(harness.operations.applyClaudeApiConfig).toHaveBeenCalledWith({
       apiConfig: expect.objectContaining({ customApiKey: "claude-key" }),
+    });
+  });
+
+  it("does not inject a stored Claude key after the route Base URL changes", async () => {
+    const settings = cloneSettings();
+    settings.claudeApiConfig = {
+      ...settings.claudeApiConfig,
+      activeProvider: "custom",
+      customProviderId: "custom",
+      customBaseUrl: "https://old.example/anthropic",
+      customApiKey: "",
+    };
+    const harness = createHarness(settings);
+    harness.keys.set("claude:custom", "old-route-key");
+
+    await harness.service.applyClaudeProfile({
+      ...settings.claudeApiConfig,
+      customBaseUrl: "https://new.example/anthropic",
+    });
+
+    expect(harness.operations.applyClaudeApiConfig).toHaveBeenCalledWith({
+      apiConfig: expect.objectContaining({
+        customBaseUrl: "https://new.example/anthropic",
+        customApiKey: "",
+      }),
     });
   });
 });

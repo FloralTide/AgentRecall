@@ -116,6 +116,18 @@ function storedKeyCanHydrateTarget(
     && normalizedProviderBaseUrl(savedTarget.customBaseUrl) === targetBaseUrl;
 }
 
+function providerRouteMatches(
+  target: ProviderKeyTargetConfig,
+  providerId: string,
+  baseUrl: string,
+): boolean {
+  const normalizedBaseUrl = normalizedProviderBaseUrl(baseUrl);
+  return Boolean(normalizedBaseUrl)
+    && target.activeProvider === "custom"
+    && target.customProviderId === providerId
+    && normalizedProviderBaseUrl(target.customBaseUrl) === normalizedBaseUrl;
+}
+
 /** Human-readable provenance for the credential the connection test ended up using. */
 function summaryKeySource(typedKey: string, resolvedKey: string, store: ProviderKeyTarget): string | undefined {
   if (typedKey) return "API key field";
@@ -335,12 +347,15 @@ export class ProviderService {
     const settings = this.dependencies.getSettings();
     const keyTarget = input.keyTarget ?? "codex";
     const targetConfig = keyTarget === "summary" ? settings.summaryApiConfig : settings.apiConfig;
-    const savedKey = (input.providerId ? this.dependencies.keys.get(keyTarget, input.providerId) : "")
-      || this.dependencies.keys.get(keyTarget, targetConfig.customProviderId);
+    const providerId = input.providerId || targetConfig.customProviderId;
+    const explicitKey = input.apiKey.trim();
+    const savedKey = !explicitKey && providerRouteMatches(targetConfig, providerId, input.baseUrl)
+      ? this.dependencies.keys.get(keyTarget, providerId)
+      : "";
     return this.operations.probeCodexModels({
       baseUrl: input.baseUrl,
-      apiKey: input.apiKey || savedKey,
-      providerId: input.providerId,
+      apiKey: explicitKey || savedKey,
+      providerId,
       // The renderer always sends the directory it means, so these fallbacks only cover a probe
       // that omitted one. A summary probe must not fall through to the Codex tab's directory:
       // they are independent routes, and an empty summary directory means the machine's `~/.codex`.
@@ -349,7 +364,7 @@ export class ProviderService {
           ? settings.summaryApiConfig.customConfigDir || settings.summaryCodexConfigDir
           : settings.apiConfig.customConfigDir)
         || undefined,
-      apiKeySource: input.apiKey
+      apiKeySource: explicitKey
         ? "API key field"
         : savedKey
           ? `AgentRecall ${keyTarget} key store`
@@ -362,16 +377,20 @@ export class ProviderService {
     const keyTarget = input.keyTarget ?? "claude";
     const targetConfig = keyTarget === "summary" ? settings.summaryApiConfig : settings.claudeApiConfig;
     const providerId = input.providerId || targetConfig.customProviderId;
-    const savedKey = this.dependencies.keys.get(keyTarget, providerId);
+    const explicitKey = input.apiKey.trim();
+    const savedKey = !explicitKey && providerRouteMatches(targetConfig, providerId, input.baseUrl)
+      ? this.dependencies.keys.get(keyTarget, providerId)
+      : "";
     return this.operations.probeClaudeModels({
       baseUrl: input.baseUrl,
-      apiKey: input.apiKey || savedKey,
+      apiKey: explicitKey || savedKey,
+      providerId,
       apiFormat: input.apiFormat,
       apiKeyField: input.apiKeyField,
       claudeHome: input.claudeHome
         || (keyTarget === "summary" ? settings.summaryClaudeConfigDir : settings.claudeApiConfig.customConfigDir)
         || undefined,
-      apiKeySource: input.apiKey
+      apiKeySource: explicitKey
         ? "API key field"
         : savedKey
           ? `AgentRecall ${keyTarget} key store`
@@ -616,9 +635,16 @@ export class ProviderService {
     const typedKey = input.apiKey.trim();
 
     if (input.source === "claude") {
-      const apiKey = typedKey || this.summaryStoredKey(input.providerId);
+      const id = input.providerId?.trim() || "";
+      const apiKey = typedKey || (
+        id && providerRouteMatches(settings.summaryApiConfig, id, input.baseUrl)
+          ? this.dependencies.keys.get("summary", id)
+          : ""
+      );
       return this.operations.resolveClaudeProviderCredential({
         claudeHome: input.configDir || settings.summaryClaudeConfigDir || undefined,
+        providerId: input.providerId,
+        baseUrl: input.baseUrl,
         apiKeyField: input.apiKeyField,
         apiKey,
         apiKeySource: summaryKeySource(typedKey, apiKey, "summary"),
@@ -626,32 +652,38 @@ export class ProviderService {
     }
 
     if (input.source === "codex") {
-      const apiKey = typedKey || this.summaryStoredKey(input.providerId);
+      const id = input.providerId?.trim() || "";
+      const apiKey = typedKey || (
+        id && providerRouteMatches(settings.summaryApiConfig, id, input.baseUrl)
+          ? this.dependencies.keys.get("summary", id)
+          : ""
+      );
       return this.operations.resolveCodexProviderCredential({
         codexHome: input.configDir || settings.summaryCodexConfigDir || undefined,
         providerId: input.providerId,
+        baseUrl: input.baseUrl,
         apiKey,
         apiKeySource: summaryKeySource(typedKey, apiKey, "summary"),
       });
     }
 
     const keyTarget = input.inherit ? "codex" : "summary";
-    const apiKey = typedKey || this.dependencies.keys.get(keyTarget, input.providerId);
+    const targetConfig = input.inherit ? settings.apiConfig : settings.summaryApiConfig;
+    const apiKey = typedKey || (
+      providerRouteMatches(targetConfig, input.providerId, input.baseUrl)
+        ? this.dependencies.keys.get(keyTarget, input.providerId)
+        : ""
+    );
     if (!input.inherit) {
       return Promise.resolve({ apiKey, source: summaryKeySource(typedKey, apiKey, "summary") ?? null });
     }
     return this.operations.resolveCodexProviderCredential({
       codexHome: input.codexHome || settings.apiConfig.customConfigDir || undefined,
       providerId: input.providerId,
+      baseUrl: input.baseUrl,
       apiKey,
       apiKeySource: summaryKeySource(typedKey, apiKey, "codex"),
     });
-  }
-
-  /** The Codex and Claude summary sources may have no provider id at all when the route is official. */
-  private summaryStoredKey(providerId: string | undefined): string {
-    const id = providerId?.trim();
-    return id ? this.dependencies.keys.get("summary", id) : "";
   }
 
   async applyCodexProfile(apiConfigInput: Partial<ApiConfig>): Promise<ApplyCodexProfileResult> {
@@ -667,8 +699,12 @@ export class ProviderService {
   applyClaudeProfile(apiConfigInput: Partial<ClaudeApiConfig>): Promise<ApplyClaudeProfileResult> {
     const apiConfig = { ...apiConfigInput };
     if (apiConfig.activeProvider === "custom" && !apiConfig.customApiKey?.trim()) {
-      const providerId = normalizeClaudeApiConfig({ customProviderId: apiConfig.customProviderId }).customProviderId;
-      apiConfig.customApiKey = this.dependencies.keys.get("claude", providerId);
+      const normalized = normalizeClaudeApiConfig(apiConfig);
+      const preset = CLAUDE_API_PROVIDER_PRESETS.find((item) => item.id === normalized.customProviderId);
+      const baseUrl = apiConfig.customBaseUrl?.trim() || preset?.baseUrl || "";
+      if (providerRouteMatches(this.dependencies.getSettings().claudeApiConfig, normalized.customProviderId, baseUrl)) {
+        apiConfig.customApiKey = this.dependencies.keys.get("claude", normalized.customProviderId);
+      }
     }
     return this.operations.applyClaudeApiConfig({ apiConfig });
   }
@@ -726,11 +762,18 @@ export class ProviderService {
 
   private async withCodexCredential(apiConfig: ApiConfig): Promise<ApiConfig> {
     if (apiConfig.activeProvider !== "custom" || apiConfig.customApiKey) return apiConfig;
-    const storedKey = this.dependencies.keys.get("codex", apiConfig.customProviderId);
+    const storedKey = providerRouteMatches(
+      this.dependencies.getSettings().apiConfig,
+      apiConfig.customProviderId,
+      apiConfig.customBaseUrl,
+    )
+      ? this.dependencies.keys.get("codex", apiConfig.customProviderId)
+      : "";
     if (storedKey) return { ...apiConfig, customApiKey: storedKey };
     const credential = await this.operations.resolveCodexProviderCredential({
       codexHome: apiConfig.customConfigDir || undefined,
       providerId: apiConfig.customProviderId,
+      baseUrl: apiConfig.customBaseUrl,
       preferConfiguredHelper: true,
     });
     return credential.apiKey ? { ...apiConfig, customApiKey: credential.apiKey } : apiConfig;

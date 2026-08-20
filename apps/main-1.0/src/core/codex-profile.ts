@@ -187,10 +187,14 @@ export async function loadCodexConfigSnapshot(configuredHome?: string): Promise<
 export async function probeCodexModels(input: CodexModelProbeInput, fetchImpl: ProviderModelsFetch = fetch): Promise<CodexModelProbeResult> {
   const providerId = input.providerId || await readActiveCodexProviderId(input.codexHome);
   const explicitKey = input.apiKey.trim();
-  // Always consult the Codex config: a manually typed Custom route has no section of
-  // its own, and the summary route falls back to whatever Codex is already using.
-  const configProvider = await readCodexConfigProviderSecret(providerId, input.codexHome, !explicitKey);
-  const baseUrl = normalizeBaseUrl(input.baseUrl || configProvider?.baseUrl || "");
+  const requestedBaseUrl = normalizeBaseUrl(input.baseUrl);
+  const configProvider = await readCodexConfigProviderSecret(
+    providerId,
+    requestedBaseUrl,
+    input.codexHome,
+    !explicitKey,
+  );
+  const baseUrl = requestedBaseUrl || normalizeBaseUrl(configProvider?.baseUrl || "");
   const apiKey = explicitKey || configProvider?.apiKey || "";
   const result = await probeProviderModels({ baseUrl, apiKey }, fetchImpl);
   return {
@@ -202,6 +206,8 @@ export async function probeCodexModels(input: CodexModelProbeInput, fetchImpl: P
 export async function resolveCodexProviderCredential(input: {
   codexHome?: string;
   providerId?: string;
+  /** When supplied, config-owned credentials must belong to this exact provider route. */
+  baseUrl?: string;
   apiKey?: string;
   apiKeySource?: string;
   /** Opt in only for an operation that may execute the provider's configured auth command. */
@@ -212,12 +218,24 @@ export async function resolveCodexProviderCredential(input: {
   const codexHome = resolveProviderConfigDirectory(input.codexHome, ".codex");
   const configText = await readOptionalFile(path.join(codexHome, "config.toml"));
   const providerId = input.providerId || readTopLevelTomlString(configText, "model_provider") || "";
+  const explicitKey = input.apiKey?.trim() ?? "";
+  if (!explicitKey && input.baseUrl !== undefined) {
+    const section = providerId ? readTomlSection(configText, modelProviderSection(providerId)) : "";
+    const configuredBaseUrl = readTomlString(section, "base_url") || "";
+    if (
+      !configuredBaseUrl
+      || normalizeBaseUrl(configuredBaseUrl) !== normalizeBaseUrl(input.baseUrl)
+    ) {
+      return { apiKey: "", source: null };
+    }
+  }
   return resolveCodexCredential({
     codexHome,
     configText,
     providerId,
     explicitKey: input.apiKey,
     explicitSource: input.apiKeySource,
+    allowOtherProviders: input.baseUrl === undefined,
     executeCredentialHelper: input.executeCredentialHelper ?? false,
     preferConfiguredHelper: input.preferConfiguredHelper ?? false,
   });
@@ -269,20 +287,27 @@ async function readActiveCodexProviderId(codexHome?: string): Promise<string> {
 
 async function readCodexConfigProviderSecret(
   providerId: string,
+  requestedBaseUrl: string,
   codexHome?: string,
-  executeCredentialHelper = false,
+  resolveCredential = true,
 ): Promise<{ baseUrl: string; apiKey: string; credentialSource: string | null } | null> {
+  if (!providerId) return null;
   const home = resolveProviderConfigDirectory(codexHome, ".codex");
   const text = await readOptionalFile(path.join(home, "config.toml"));
   const section = readTomlSection(text, modelProviderSection(providerId));
   const baseUrl = readTomlString(section, "base_url") || "";
+  // Config-owned credentials belong to the route that declares them. Resolve (and potentially
+  // execute) them only after both the provider id and destination are known to match.
+  if (!baseUrl || (requestedBaseUrl && normalizeBaseUrl(baseUrl) !== requestedBaseUrl)) return null;
+  if (!resolveCredential) return { baseUrl, apiKey: "", credentialSource: null };
   const envKey = readTomlString(section, "env_key") || "";
   const credential = await resolveCodexCredential({
     codexHome: home,
     configText: text,
     providerId,
     envKey,
-    executeCredentialHelper,
+    allowOtherProviders: false,
+    executeCredentialHelper: true,
   });
   return baseUrl || credential.apiKey ? { baseUrl, apiKey: credential.apiKey, credentialSource: credential.source } : null;
 }
@@ -550,24 +575,32 @@ async function applyGeneratedCodexProvider(options: {
   if (!apiConfig.customBaseUrl) throw new Error(`Base URL is required to apply ${apiConfig.customProviderName}.`);
 
   const activeConfigText = await readOptionalFile(configTarget);
-  const commandAuth = readCodexCommandAuth(activeConfigText, providerId);
+  const currentProviderSection = readTomlSection(activeConfigText, modelProviderSection(providerId));
+  const currentBaseUrl = readTomlString(currentProviderSection, "base_url") || "";
+  const currentRouteMatches = Boolean(currentBaseUrl)
+    && normalizeBaseUrl(currentBaseUrl) === normalizeBaseUrl(apiConfig.customBaseUrl);
+  const commandAuth = currentRouteMatches ? readCodexCommandAuth(activeConfigText, providerId) : null;
   // An existing helper remains authoritative unless the user explicitly enters a replacement
   // key. In particular, never persist a generic environment/auth.json fallback for this route.
   const useCommandAuth = Boolean(commandAuth && !apiConfig.customApiKey.trim());
+  const explicitKey = apiConfig.customApiKey.trim();
   const credential: ResolvedCodexCredential = useCommandAuth
     ? {
         apiKey: "",
         source: `config.toml ${providerId}.auth.command`,
         configured: true,
       }
-    : await resolveCodexCredential({
-        codexHome,
-        configText: activeConfigText,
-        providerId,
-        explicitKey: apiConfig.customApiKey,
-        // Applying a route must never turn a short-lived helper token into a persisted API key.
-        executeCredentialHelper: false,
-      });
+    : explicitKey || currentRouteMatches
+      ? await resolveCodexCredential({
+          codexHome,
+          configText: activeConfigText,
+          providerId,
+          explicitKey,
+          allowOtherProviders: false,
+          // Applying a route must never turn a short-lived helper token into a persisted API key.
+          executeCredentialHelper: false,
+        })
+      : { apiKey: "", source: null };
   if (!useCommandAuth && !credential.apiKey) throw new Error(`No API key was found for ${apiConfig.customProviderName}.`);
   const effectiveConfig = { ...apiConfig, customApiKey: credential.apiKey };
   const baseConfigText = activeConfigText.trim() ? activeConfigText : generatedCodexConfig(effectiveConfig, providerId);

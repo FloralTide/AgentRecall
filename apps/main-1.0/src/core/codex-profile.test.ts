@@ -508,7 +508,7 @@ describe("codex profile switching", () => {
           "",
           "[model_providers.gateway]",
           'name = "Old Gateway"',
-          'base_url = "https://old.example/v1"',
+          'base_url = "https://new.example/v1"',
           'wire_api = "responses"',
           "requires_openai_auth = true",
           'env_key = "OPENAI_API_KEY"',
@@ -562,6 +562,34 @@ describe("codex profile switching", () => {
     });
   });
 
+  it("does not carry command auth to a changed Base URL without an explicit key", async () => {
+    await withCodexHome(async (codexHome) => {
+      const originalConfig = [
+        "[model_providers.gateway]",
+        'base_url = "https://old.example/v1"',
+        "",
+        "[model_providers.gateway.auth]",
+        'command = "agent-recall-helper-must-not-run"',
+      ].join("\n");
+      await writeFile(path.join(codexHome, "config.toml"), originalConfig);
+
+      await expect(applyCodexApiConfig({
+        codexHome,
+        apiConfig: {
+          activeProvider: "custom",
+          customProviderId: "gateway",
+          customProviderName: "Gateway",
+          customBaseUrl: "https://new.example/v1",
+          customApiKey: "",
+          customModel: "new-model",
+          customApiFormat: "openai_responses",
+        },
+      })).rejects.toThrow(/No API key was found/);
+
+      await expect(readFile(path.join(codexHome, "config.toml"), "utf8")).resolves.toBe(originalConfig);
+    });
+  });
+
   it("does not create auth.json from a generic environment key for command auth", async () => {
     vi.stubEnv("OPENAI_API_KEY", "unrelated-environment-key");
     await withCodexHome(async (codexHome) => {
@@ -569,7 +597,7 @@ describe("codex profile switching", () => {
         path.join(codexHome, "config.toml"),
         [
           "[model_providers.gateway]",
-          'base_url = "https://old.example/v1"',
+          'base_url = "https://new.example/v1"',
           "",
           "[model_providers.gateway.auth]",
           'command = "agent-recall-helper-must-not-run"',
@@ -678,6 +706,33 @@ describe("codex profile switching", () => {
     });
   });
 
+  it("does not execute command auth for a different Base URL", async () => {
+    await withCodexHome(async (codexHome) => {
+      await writeFile(
+        path.join(codexHome, "config.toml"),
+        [
+          "[model_providers.gateway]",
+          'base_url = "https://old.example/v1"',
+          "",
+          "[model_providers.gateway.auth]",
+          'command = "agent-recall-helper-must-not-run"',
+        ].join("\n"),
+      );
+      const fetchImpl = vi.fn();
+
+      await expect(probeCodexModels(
+        {
+          baseUrl: "https://new.example/v1",
+          apiKey: "",
+          providerId: "gateway",
+          codexHome,
+        },
+        fetchImpl,
+      )).rejects.toThrow(/No API key was found/);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+  });
+
   it("uses an explicit probe key without executing the configured auth command", async () => {
     await withCodexHome(async (codexHome) => {
       const markerPath = path.join(codexHome, "probe-helper-ran");
@@ -702,14 +757,14 @@ describe("codex profile switching", () => {
 
       const result = await probeCodexModels(
         {
-          baseUrl: "",
+          baseUrl: "https://new.example/v1",
           apiKey: "explicit-key",
           apiKeySource: "API key field",
           providerId: "gateway",
           codexHome,
         },
         async (url, init) => {
-          expect(String(url)).toBe("https://api.example/v1/models");
+          expect(String(url)).toBe("https://new.example/v1/models");
           expect(init?.headers?.Authorization).toBe("Bearer explicit-key");
           return { ok: true, status: 200, async json() { return { data: [{ id: "gateway-model" }] }; } };
         },
@@ -813,10 +868,8 @@ describe("codex profile switching", () => {
     });
   });
 
-  it("finds a key for a manually typed Custom route that has no section of its own", async () => {
+  it("does not borrow a different provider's key for a manually typed route", async () => {
     await withCodexHome(async (codexHome) => {
-      // The user picked "Manual custom route", so providerId `custom` matches nothing in
-      // config.toml — the key still has to be found on the provider Codex is actually using.
       await writeFile(
         path.join(codexHome, "config.toml"),
         [
@@ -828,18 +881,12 @@ describe("codex profile switching", () => {
         ].join("\n"),
       );
 
-      const result = await probeCodexModels(
+      const fetchImpl = vi.fn();
+      await expect(probeCodexModels(
         { baseUrl: "https://api.example/v1", apiKey: "", providerId: "custom", codexHome },
-        async (_url, init) => {
-          expect(init?.headers?.Authorization).toBe("Bearer sk-inline-dms");
-          return { ok: true, status: 200, async json() { return { data: [{ id: "gh:gpt-5.5" }] }; } };
-        },
-      );
-
-      expect(result).toMatchObject({
-        models: ["gh:gpt-5.5"],
-        credentialSource: "config.toml dms.api_key (provider dms)",
-      });
+        fetchImpl,
+      )).rejects.toThrow(/No API key was found/);
+      expect(fetchImpl).not.toHaveBeenCalled();
     });
   });
 
@@ -865,7 +912,10 @@ describe("codex profile switching", () => {
 
   it("falls back to a .env file next to the Codex config", async () => {
     await withCodexHome(async (codexHome) => {
-      await writeFile(path.join(codexHome, "config.toml"), 'model_provider = "dms"\n\n[model_providers.dms]\n');
+      await writeFile(
+        path.join(codexHome, "config.toml"),
+        'model_provider = "dms"\n\n[model_providers.dms]\nbase_url = "https://api.example/v1"\n',
+      );
       await writeFile(path.join(codexHome, ".env"), "# comment\nexport CODEX_API_KEY='sk-dotenv'\n");
 
       const result = await probeCodexModels(

@@ -329,7 +329,12 @@ describe("Claude Code provider switching", () => {
     await withClaudeHome(async (claudeHome) => {
       await writeFile(
         path.join(claudeHome, "settings.json"),
-        JSON.stringify({ env: { ANTHROPIC_API_KEY: "stored-key" } }),
+        JSON.stringify({
+          env: {
+            ANTHROPIC_BASE_URL: "https://api.example.com/anthropic",
+            ANTHROPIC_API_KEY: "stored-key",
+          },
+        }),
       );
 
       const result = await probeClaudeModels(
@@ -337,6 +342,7 @@ describe("Claude Code provider switching", () => {
           claudeHome,
           baseUrl: "https://api.example.com/anthropic",
           apiKey: "",
+          providerId: "custom",
           apiFormat: "anthropic",
           apiKeyField: "ANTHROPIC_API_KEY",
         },
@@ -361,7 +367,10 @@ describe("Claude Code provider switching", () => {
     await withClaudeHome(async (claudeHome) => {
       await writeFile(
         path.join(claudeHome, "settings.json"),
-        JSON.stringify({ apiKeyHelper: "echo helper-key" }),
+        JSON.stringify({
+          env: { ANTHROPIC_BASE_URL: "https://api.example.com/anthropic" },
+          apiKeyHelper: "echo helper-key",
+        }),
       );
 
       const result = await probeClaudeModels(
@@ -369,6 +378,7 @@ describe("Claude Code provider switching", () => {
           claudeHome,
           baseUrl: "https://api.example.com/anthropic",
           apiKey: "",
+          providerId: "custom",
           apiFormat: "anthropic",
           apiKeyField: "ANTHROPIC_API_KEY",
         },
@@ -388,11 +398,110 @@ describe("Claude Code provider switching", () => {
     });
   });
 
+  it("does not reuse settings credentials for a different Base URL", async () => {
+    await withClaudeHome(async (claudeHome) => {
+      await writeFile(
+        path.join(claudeHome, "settings.json"),
+        JSON.stringify({
+          env: { ANTHROPIC_BASE_URL: "https://old.example/anthropic" },
+          apiKeyHelper: "agent-recall-helper-must-not-run",
+        }),
+      );
+      const fetchImpl = vi.fn(async (_url: string, init?: { headers?: Record<string, string> }) => {
+        expect(init?.headers?.Authorization).toBe("Bearer explicit-key");
+        return { ok: true, status: 200, async json() { return { models: ["claude-explicit"] }; } };
+      });
+
+      await expect(probeClaudeModels({
+        claudeHome,
+        baseUrl: "https://new.example/anthropic",
+        apiKey: "",
+        providerId: "custom",
+        apiFormat: "anthropic",
+        apiKeyField: "ANTHROPIC_AUTH_TOKEN",
+      }, fetchImpl)).rejects.toThrow(/No API key was found/);
+      expect(fetchImpl).not.toHaveBeenCalled();
+
+      await expect(probeClaudeModels({
+        claudeHome,
+        baseUrl: "https://new.example/anthropic",
+        apiKey: "explicit-key",
+        providerId: "custom",
+        apiFormat: "anthropic",
+        apiKeyField: "ANTHROPIC_AUTH_TOKEN",
+      }, fetchImpl)).resolves.toMatchObject({ models: ["claude-explicit"] });
+      expect(fetchImpl).toHaveBeenCalled();
+    });
+  });
+
+  it("preserves apiKeyHelper when applying its matching route without persisting a token", async () => {
+    await withClaudeHome(async (claudeHome) => {
+      await writeFile(
+        path.join(claudeHome, "settings.json"),
+        JSON.stringify({
+          env: { ANTHROPIC_BASE_URL: "https://api.example.com/anthropic" },
+          apiKeyHelper: "agent-recall-helper-must-not-run",
+          hooks: { Stop: [] },
+        }),
+      );
+
+      const result = await applyClaudeApiConfig({
+        claudeHome,
+        apiConfig: {
+          activeProvider: "custom",
+          customProviderId: "internal-gateway",
+          customProviderName: "Internal Gateway",
+          customBaseUrl: "https://api.example.com/anthropic/",
+          customApiKey: "",
+          customModel: "claude-sonnet-4.6",
+          customHaikuModel: "claude-haiku-4.5",
+          customSonnetModel: "claude-sonnet-4.6",
+          customOpusModel: "claude-opus-4.6",
+          customApiFormat: "anthropic",
+          customApiKeyField: "ANTHROPIC_AUTH_TOKEN",
+        },
+      });
+
+      const settings = await readSettings(claudeHome);
+      expect(result.credentialSource).toBe("settings.json apiKeyHelper");
+      expect(settings.apiKeyHelper).toBe("agent-recall-helper-must-not-run");
+      expect(settings.env).toMatchObject({
+        ANTHROPIC_BASE_URL: "https://api.example.com/anthropic/",
+        ANTHROPIC_MODEL: "claude-sonnet-4.6",
+      });
+      expect(settings.env).not.toHaveProperty("ANTHROPIC_AUTH_TOKEN");
+      expect(settings.env).not.toHaveProperty("ANTHROPIC_API_KEY");
+      expect(settings.hooks).toEqual({ Stop: [] });
+      const appliedText = await readFile(path.join(claudeHome, "settings.json"), "utf8");
+
+      await expect(applyClaudeApiConfig({
+        claudeHome,
+        apiConfig: {
+          activeProvider: "custom",
+          customProviderId: "internal-gateway",
+          customProviderName: "Internal Gateway",
+          customBaseUrl: "https://other.example/anthropic",
+          customApiKey: "",
+          customModel: "claude-sonnet-4.6",
+          customApiFormat: "anthropic",
+          customApiKeyField: "ANTHROPIC_AUTH_TOKEN",
+        },
+      })).rejects.toThrow(/No API key was found/);
+      await expect(readFile(path.join(claudeHome, "settings.json"), "utf8")).resolves.toBe(appliedText);
+    });
+  });
+
   it("writes and verifies a custom route in the selected Claude config directory", async () => {
     await withClaudeHome(async (claudeHome) => {
       await writeFile(
         path.join(claudeHome, "settings.json"),
-        JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "stored-key" }, hooks: { Stop: [] } }),
+        JSON.stringify({
+          env: {
+            ANTHROPIC_BASE_URL: "https://api.example.com/anthropic",
+            ANTHROPIC_AUTH_TOKEN: "stored-key",
+          },
+          hooks: { Stop: [] },
+        }),
       );
 
       const result = await applyClaudeApiConfig({

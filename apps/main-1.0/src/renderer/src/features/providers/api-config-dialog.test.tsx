@@ -265,6 +265,13 @@ describe("AI summary source pane", () => {
     await typeInto(codexBaseUrl!, "https://new-codex.example/v1");
 
     expect(codexKey?.value).toBe("");
+    const codexDetect = container.querySelector<HTMLButtonElement>(".codex-model-detect-button");
+    await act(async () => codexDetect?.click());
+    expect(window.sessionSearch.probeCodexModels).toHaveBeenLastCalledWith(expect.objectContaining({
+      baseUrl: "https://new-codex.example/v1",
+      apiKey: "",
+      providerId: "custom",
+    }));
     const codexTest = container.querySelector<HTMLButtonElement>('[data-provider-connection-test="codex"]');
     await act(async () => codexTest?.click());
     expect(testProviderConnection).toHaveBeenLastCalledWith({
@@ -288,6 +295,13 @@ describe("AI summary source pane", () => {
     await typeInto(claudeBaseUrl!, "https://new-claude.example/anthropic");
 
     expect(claudeKey?.value).toBe("");
+    const claudeDetect = container.querySelector<HTMLButtonElement>(".codex-model-detect-button");
+    await act(async () => claudeDetect?.click());
+    expect(window.sessionSearch.probeClaudeModels).toHaveBeenLastCalledWith(expect.objectContaining({
+      baseUrl: "https://new-claude.example/anthropic",
+      apiKey: "",
+      providerId: "custom",
+    }));
     const claudeTest = container.querySelector<HTMLButtonElement>('[data-provider-connection-test="claude"]');
     await act(async () => claudeTest?.click());
     expect(testProviderConnection).toHaveBeenLastCalledWith({
