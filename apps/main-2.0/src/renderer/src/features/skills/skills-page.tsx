@@ -134,11 +134,15 @@ export function SkillsPage({
     onRefresh();
   };
 
-  const updateTargets = async (skill: ManagedSkill, targets: SkillInstallTarget[]) => {
+  const updateTargets = async (
+    skill: ManagedSkill,
+    targets: SkillInstallTarget[],
+    forceTargets: SkillInstallTarget[],
+  ) => {
     setTargetBusy(true);
     setAppFeedback(null);
     try {
-      await window.sessionSearch.updateManagedSkillTargets(skill.managedId, targets);
+      await window.sessionSearch.updateManagedSkillTargets(skill.managedId, targets, forceTargets);
       setPendingSelection(skill.managedId);
       setAppFeedback({
         kind: "success",
