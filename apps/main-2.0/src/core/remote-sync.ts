@@ -1209,6 +1209,8 @@ def emit_codex_summary(path, stat, titles, source):
   raw_id = path.stem
   project_path = ""
   timestamp = int(stat.st_mtime * 1000)
+  session_identity_found = False
+  session_timestamp_found = False
   first_question = ""
   message_count = 0
   message_events = []
@@ -1230,35 +1232,49 @@ def emit_codex_summary(path, stat, titles, source):
         if row.get("type") == "session_meta":
           payload = row.get("payload")
           if isinstance(payload, dict):
-            raw_id = payload.get("id") if isinstance(payload.get("id"), str) else raw_id
-            project_path = payload.get("cwd") if isinstance(payload.get("cwd"), str) else project_path
-            git = payload.get("git")
-            if not git_branch and isinstance(git, dict) and isinstance(git.get("branch"), str):
-              git_branch = git.get("branch")
-            structured_source = payload.get("source")
-            if isinstance(structured_source, dict):
-              subagent = structured_source.get("subagent")
-              thread_spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
-              if isinstance(thread_spawn, dict) and isinstance(thread_spawn.get("parent_thread_id"), str):
-                is_subagent = True
-                parent_session_id = thread_spawn.get("parent_thread_id")
-            if payload.get("thread_source") == "subagent" and isinstance(payload.get("parent_thread_id"), str):
-              is_subagent = True
-              parent_session_id = payload.get("parent_thread_id")
-          parsed_timestamp = _iso_timestamp_ms(row.get("timestamp"))
-          if parsed_timestamp is not None:
-            timestamp = parsed_timestamp
+            session_id = payload.get("id")
+            if not isinstance(session_id, str) or not session_id:
+              session_id = payload.get("session_id")
+            if isinstance(session_id, str) and session_id:
+              if not session_identity_found:
+                raw_id = session_id
+                session_identity_found = True
+              if session_id == raw_id:
+                if not project_path and isinstance(payload.get("cwd"), str):
+                  project_path = payload.get("cwd")
+                git = payload.get("git")
+                if not git_branch and isinstance(git, dict) and isinstance(git.get("branch"), str):
+                  git_branch = git.get("branch")
+                structured_source = payload.get("source")
+                if isinstance(structured_source, dict):
+                  subagent = structured_source.get("subagent")
+                  thread_spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
+                  if isinstance(thread_spawn, dict) and isinstance(thread_spawn.get("parent_thread_id"), str):
+                    is_subagent = True
+                    parent_session_id = parent_session_id or thread_spawn.get("parent_thread_id")
+                if payload.get("thread_source") == "subagent" and isinstance(payload.get("parent_thread_id"), str):
+                  is_subagent = True
+                  parent_session_id = parent_session_id or payload.get("parent_thread_id")
+                parsed_timestamp = _iso_timestamp_ms(row.get("timestamp"))
+                if parsed_timestamp is not None and not session_timestamp_found:
+                  timestamp = parsed_timestamp
+                  session_timestamp_found = True
           continue
         if not row.get("type") and isinstance(row.get("id"), str) and isinstance(row.get("timestamp"), str):
-          raw_id = row.get("id")
-          git = row.get("git")
-          if isinstance(git, dict):
-            project_path = git.get("cwd") if isinstance(git.get("cwd"), str) else project_path
-            if not git_branch and isinstance(git.get("branch"), str):
-              git_branch = git.get("branch")
-          parsed_timestamp = _iso_timestamp_ms(row.get("timestamp"))
-          if parsed_timestamp is not None:
-            timestamp = parsed_timestamp
+          if not session_identity_found:
+            raw_id = row.get("id")
+            session_identity_found = True
+          if row.get("id") == raw_id:
+            git = row.get("git")
+            if isinstance(git, dict):
+              if not project_path and isinstance(git.get("cwd"), str):
+                project_path = git.get("cwd")
+              if not git_branch and isinstance(git.get("branch"), str):
+                git_branch = git.get("branch")
+            parsed_timestamp = _iso_timestamp_ms(row.get("timestamp"))
+            if parsed_timestamp is not None and not session_timestamp_found:
+              timestamp = parsed_timestamp
+              session_timestamp_found = True
           continue
         accumulate_codex_tokens(token_state, row)
   except Exception:
