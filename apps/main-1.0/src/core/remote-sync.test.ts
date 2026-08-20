@@ -191,6 +191,110 @@ describe("remote sync", () => {
     }
   });
 
+  it("keeps a Codex child distinct when its rollout repeats inherited parent metadata", async () => {
+    const store = createInMemoryStore();
+    const environment = upsertSshEnvironment(store);
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-remote-inherited-meta-"));
+    const parentId = "codex-parent";
+    const childId = "codex-child";
+    const parentStartedAt = "2026-08-20T06:30:00Z";
+    const childStartedAt = "2026-08-20T06:31:00Z";
+    const inheritedAt = "2026-08-20T06:35:00Z";
+    const resumedAt = "2026-08-20T06:40:00Z";
+    const writeJsonl = (filePath: string, rows: unknown[]) => {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, rows.map((row) => JSON.stringify(row)).join("\n"), "utf8");
+    };
+    const message = (text: string) => ({
+      type: "response_item",
+      payload: { type: "message", role: "user", content: [{ type: "input_text", text }] },
+    });
+    try {
+      writeJsonl(path.join(tempHome, ".codex", "sessions", "2026", "08", "20", "parent.jsonl"), [
+        {
+          type: "session_meta",
+          timestamp: parentStartedAt,
+          payload: { id: parentId, cwd: "/repo/parent", source: "vscode" },
+        },
+        message("parent question"),
+      ]);
+      writeJsonl(path.join(tempHome, ".codex", "sessions", "2026", "08", "20", "child.jsonl"), [
+        {
+          type: "session_meta",
+          timestamp: childStartedAt,
+          payload: {
+            id: childId,
+            session_id: parentId,
+            cwd: "<local-workspace>",
+            source: { subagent: { thread_spawn: { parent_thread_id: parentId, depth: 1 } } },
+            thread_source: "subagent",
+            parent_thread_id: parentId,
+          },
+        },
+        message("child task"),
+        {
+          type: "session_meta",
+          timestamp: "2026-08-20T06:32:00Z",
+          payload: { id: childId, cwd: "/repo/child" },
+        },
+        {
+          type: "session_meta",
+          timestamp: inheritedAt,
+          payload: { id: parentId, cwd: "/repo/parent", source: "vscode" },
+        },
+        {
+          type: "session_meta",
+          timestamp: resumedAt,
+          payload: { id: parentId, cwd: "/repo/parent", source: "vscode" },
+        },
+      ]);
+      writeJsonl(path.join(tempHome, ".codex", "sessions", "2026", "08", "20", "session-id-only.jsonl"), [
+        {
+          type: "session_meta",
+          timestamp: "2026-08-20T06:45:00Z",
+          payload: { session_id: "semantic-session-id", cwd: "/repo/legacy" },
+        },
+        message("legacy identity question"),
+      ]);
+
+      await syncRemoteEnvironment(store, environment, {
+        runSsh: async (_environment, remoteCommand) => execFileSync(
+          "python3",
+          ["-c", decodeCollectorScript(remoteCommand)],
+          { encoding: "utf8", env: { ...process.env, HOME: tempHome } },
+        ),
+      });
+
+      const sessions = store.searchSessions({ environmentId: environment.id, excludeSubagents: false });
+      expect(sessions).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          sessionKey: `ssh:ssh-devbox:codex-cli:${parentId}`,
+          rawId: parentId,
+          projectPath: "/repo/parent",
+          isSubagent: false,
+        }),
+        expect.objectContaining({
+          sessionKey: `ssh:ssh-devbox:codex-cli:${childId}`,
+          rawId: childId,
+          projectPath: "/repo/child",
+          timestamp: new Date(childStartedAt).getTime(),
+          isSubagent: true,
+          parentSessionId: parentId,
+        }),
+        expect.objectContaining({
+          sessionKey: "ssh:ssh-devbox:codex-cli:session-id-only",
+          rawId: "session-id-only",
+          projectPath: "/repo/legacy",
+        }),
+      ]));
+      expect(sessions).toHaveLength(3);
+      expect(store.getSession("ssh:ssh-devbox:codex-cli:semantic-session-id")).toBeNull();
+    } finally {
+      store.close();
+      fs.rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
   it("indexes only the effective Codex and Claude branches from SSH summaries", async () => {
     const store = createInMemoryStore();
     const environment = upsertSshEnvironment(store);
