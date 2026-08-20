@@ -19,15 +19,6 @@ import type { SummaryProviderConnectionRequest } from "../../../../shared/ipc/pr
 import type { SettingsFeedback } from "../../app-types";
 import { localize, type LanguageMode } from "../../language";
 
-type ProviderConnectionRequest =
-  | { target: "codex"; apiConfig: ApiConfig }
-  | { target: "claude"; apiConfig: ClaudeApiConfig };
-
-interface ProviderConnectionResult {
-  elapsedMs: number;
-  credentialSource: string;
-}
-
 // The summary route is a plain OpenAI-compatible route just like the Codex one, so it
 // offers the same presets; only the stored credential differs.
 const SUMMARY_API_PROVIDER_PRESETS = API_PROVIDER_PRESETS;
@@ -125,9 +116,6 @@ export function ProviderPage({
   const claudeConnectionSignatureRef = useRef(claudeConnectionSignature);
   codexConnectionSignatureRef.current = codexConnectionSignature;
   claudeConnectionSignatureRef.current = claudeConnectionSignature;
-  const providerConnectionApi = window.sessionSearch as typeof window.sessionSearch & {
-    testProviderConnection(input: ProviderConnectionRequest): Promise<ProviderConnectionResult>;
-  };
   const updateDraftSummaryApiConfig = (next: Partial<ApiConfig>) => setDraftSummaryApiConfig((current) => ({ ...current, ...next }));
   const selectedPreset = API_PROVIDER_PRESETS.find((preset) => preset.id === draftApiConfig.customProviderId);
   const customName = selectedPreset?.label ?? (draftApiConfig.customProviderName || "Custom");
@@ -366,7 +354,7 @@ export function ProviderPage({
     const testedSignature = codexConnectionSignature;
     setCodexConnectionStatus({ kind: "running", message: l("Testing Codex connection...", "正在测试 Codex 连接...") });
     try {
-      const result = await providerConnectionApi.testProviderConnection({
+      const result = await window.sessionSearch.testProviderConnection({
         target: "codex",
         apiConfig: { ...draftApiConfig },
       });
@@ -395,7 +383,7 @@ export function ProviderPage({
     const testedSignature = claudeConnectionSignature;
     setClaudeConnectionStatus({ kind: "running", message: l("Testing Claude Code connection...", "正在测试 Claude Code 连接...") });
     try {
-      const result = await providerConnectionApi.testProviderConnection({
+      const result = await window.sessionSearch.testProviderConnection({
         target: "claude",
         apiConfig: { ...draftClaudeApiConfig },
       });
