@@ -303,6 +303,91 @@ describe("ManagedSkillLibrary conflicting installation targets", () => {
     expect(fixture.library.list().skills).toEqual([]);
   });
 
+  it("restores every installed target when staging the second target fails during deletion", () => {
+    const fixture = createManagedSkillFixture();
+    const codexTargetPath = path.join(fixture.homeDir, ".codex", "skills", fixture.managedId);
+    const claudeTargetPath = path.join(fixture.homeDir, ".claude", "skills", fixture.managedId);
+    fixture.library.updateTargets(fixture.managedId, ["codex", "claude"]);
+    const originalRenameSync = mutableFs.renameSync;
+    const restoreRenameSync = replaceRenameSync((oldPath, newPath) => {
+      if (path.resolve(String(oldPath)) === path.resolve(claudeTargetPath)) {
+        throw new Error("simulated second deletion stage failure");
+      }
+      originalRenameSync(oldPath, newPath);
+    });
+
+    try {
+      expect(() => fixture.library.delete(fixture.managedId))
+        .toThrow("simulated second deletion stage failure");
+    } finally {
+      restoreRenameSync();
+    }
+
+    for (const targetPath of [codexTargetPath, claudeTargetPath]) {
+      expect(fs.lstatSync(targetPath).isSymbolicLink()).toBe(true);
+      expect(fs.realpathSync(targetPath)).toBe(fs.realpathSync(fixture.managedSkillPath));
+      expect(fs.readdirSync(path.dirname(targetPath)).some((entry) =>
+        entry.includes(".agent-recall-backup-"))).toBe(false);
+    }
+    expect(fs.readFileSync(path.join(fixture.managedSkillPath, "SKILL.md"), "utf8"))
+      .toBe("# Fixture Skill\n");
+  });
+
+  it("restores an external directory that replaces an owned link during deletion staging", () => {
+    const fixture = createManagedSkillFixture();
+    const targetPath = path.join(fixture.homeDir, ".codex", "skills", fixture.managedId);
+    fixture.library.updateTargets(fixture.managedId, ["codex"]);
+    const originalRenameSync = mutableFs.renameSync;
+    let simulatedRace = false;
+    const restoreRenameSync = replaceRenameSync((oldPath, newPath) => {
+      if (!simulatedRace && path.resolve(String(oldPath)) === path.resolve(targetPath)) {
+        simulatedRace = true;
+        mutableFs.unlinkSync(targetPath);
+        mutableFs.mkdirSync(targetPath);
+        mutableFs.writeFileSync(path.join(targetPath, "external.txt"), "external replacement");
+      }
+      originalRenameSync(oldPath, newPath);
+    });
+
+    try {
+      expect(() => fixture.library.delete(fixture.managedId))
+        .toThrow("changed during deletion");
+    } finally {
+      restoreRenameSync();
+    }
+
+    expect(fs.lstatSync(targetPath).isDirectory()).toBe(true);
+    expect(fs.readFileSync(path.join(targetPath, "external.txt"), "utf8")).toBe("external replacement");
+    expect(fs.readdirSync(path.dirname(targetPath))).toEqual([fixture.managedId]);
+    expect(fs.readFileSync(path.join(fixture.managedSkillPath, "SKILL.md"), "utf8"))
+      .toBe("# Fixture Skill\n");
+  });
+
+  it("restores installed targets when the managed source cannot be staged for deletion", () => {
+    const fixture = createManagedSkillFixture();
+    const targetPath = path.join(fixture.homeDir, ".codex", "skills", fixture.managedId);
+    fixture.library.updateTargets(fixture.managedId, ["codex"]);
+    const originalRenameSync = mutableFs.renameSync;
+    const restoreRenameSync = replaceRenameSync((oldPath, newPath) => {
+      if (path.resolve(String(oldPath)) === path.resolve(fixture.managedSkillPath)) {
+        throw new Error("simulated managed source stage failure");
+      }
+      originalRenameSync(oldPath, newPath);
+    });
+
+    try {
+      expect(() => fixture.library.delete(fixture.managedId))
+        .toThrow("simulated managed source stage failure");
+    } finally {
+      restoreRenameSync();
+    }
+
+    expect(fs.lstatSync(targetPath).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(targetPath)).toBe(fs.realpathSync(fixture.managedSkillPath));
+    expect(fs.readFileSync(path.join(fixture.managedSkillPath, "SKILL.md"), "utf8"))
+      .toBe("# Fixture Skill\n");
+  });
+
   it("refuses to delete a managed Skill when an installed target cannot be inspected", () => {
     const fixture = createManagedSkillFixture();
     const targetPath = path.join(fixture.homeDir, ".codex", "skills", fixture.managedId);

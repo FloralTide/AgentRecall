@@ -443,25 +443,202 @@ export class ManagedSkillLibrary {
     const normalizedId = safeManagedSkillId(managedId);
     if (normalizedId !== managedId) throw new Error("Unsafe managed Skill id.");
     const skill = this.requireManagedSkill(normalizedId);
-    const ownedInstallations = new Map<string, ManagedSkillInstallation>();
+    const managedSkillRealPath = path.resolve(fs.realpathSync(skill.directoryPath));
+    const managedSkillStat = fs.lstatSync(skill.directoryPath);
+    if (!managedSkillStat.isDirectory() || managedSkillStat.isSymbolicLink()) {
+      throw new Error(`Refusing to delete managed Skill ${normalizedId} because its source is not a directory.`);
+    }
+    const realLibraryRoot = path.resolve(fs.realpathSync(this.libraryRoot));
+    const metadataPath = this.metadataPath(normalizedId);
+    const metadataStat = lstatIfPresent(metadataPath);
+    if (metadataStat && !metadataStat.isFile()) {
+      throw new Error(`Refusing to delete managed Skill ${normalizedId} because its metadata is not a regular file.`);
+    }
+    fs.accessSync(this.libraryRoot, fs.constants.W_OK);
+    fs.accessSync(path.dirname(realLibraryRoot), fs.constants.W_OK);
+    if (metadataStat) fs.accessSync(path.dirname(metadataPath), fs.constants.W_OK);
+
+    const ownedInstallations = new Map<string, {
+      installation: ManagedSkillInstallation;
+      stat: fs.Stats;
+    }>();
     for (const target of INSTALL_TARGETS) {
+      const previous = skill.installations.find((candidate) => candidate.target === target)!;
       const verified = this.inspectInstallation(normalizedId, target, true);
-      if (verified.state !== "installed") continue;
-      const installation = skill.installations.find((candidate) => candidate.target === target)!;
-      const physicalPath = comparablePath(physicalEntryPath(installation.path), this.platform);
-      if (!ownedInstallations.has(physicalPath)) ownedInstallations.set(physicalPath, installation);
-    }
-    for (const [physicalPath, installation] of ownedInstallations) {
-      if (
-        comparablePath(physicalEntryPath(installation.path), this.platform) !== physicalPath
-        || this.inspectInstallation(normalizedId, installation.target).state !== "installed"
-      ) {
-        throw new Error(`Refusing to remove a ${installation.target} Skill link that changed during deletion.`);
+      if (previous.state === "installed" && verified.state !== "installed") {
+        throw new Error(`Refusing to remove a ${target} Skill link that changed during deletion.`);
       }
-      fs.unlinkSync(installation.path);
+      if (verified.state !== "installed") continue;
+      const physicalPath = physicalEntryPath(verified.path);
+      const physicalKey = comparablePath(physicalPath, this.platform);
+      const stat = fs.lstatSync(verified.path);
+      if (
+        !stat.isSymbolicLink()
+        || path.resolve(fs.realpathSync(verified.path)) !== managedSkillRealPath
+      ) {
+        throw new Error(`Refusing to remove a ${target} Skill link that changed during deletion.`);
+      }
+      fs.accessSync(path.dirname(verified.path), fs.constants.W_OK);
+      const existing = ownedInstallations.get(physicalKey);
+      if (existing) {
+        if (!sameFileIdentity(existing.stat, stat)) {
+          throw new Error(`Refusing to remove aliased Skill links whose shared path changed during deletion.`);
+        }
+        continue;
+      }
+      ownedInstallations.set(physicalKey, {
+        installation: verified,
+        stat,
+      });
     }
-    fs.rmSync(skill.directoryPath, { recursive: true, force: false });
-    fs.rmSync(this.metadataPath(normalizedId), { force: true });
+
+    type DeleteStage = {
+      originalPath: string;
+      backupPath: string;
+      movedStat: fs.Stats | null;
+    };
+    const stagedLinks: DeleteStage[] = [];
+    let stagedSource: DeleteStage | null = null;
+    let stagedMetadata: DeleteStage | null = null;
+    const deleteToken = randomUUID();
+    const libraryParent = path.dirname(realLibraryRoot);
+    const backupStem = `.${path.basename(realLibraryRoot)}.agent-recall-delete-${deleteToken}`;
+    const sourceBackupPath = path.join(libraryParent, backupStem);
+    const metadataBackupPath = path.join(libraryParent, `${backupStem}.metadata`);
+
+    try {
+      for (const [physicalKey, owned] of ownedInstallations) {
+        const { installation } = owned;
+        if (
+          comparablePath(physicalEntryPath(installation.path), this.platform) !== physicalKey
+        ) {
+          throw new Error(`Refusing to remove a ${installation.target} Skill link whose parent path changed.`);
+        }
+        const currentStat = fs.lstatSync(installation.path);
+        if (
+          !sameFileIdentity(currentStat, owned.stat)
+          || !currentStat.isSymbolicLink()
+          || path.resolve(fs.realpathSync(installation.path)) !== managedSkillRealPath
+        ) {
+          throw new Error(`Refusing to remove a ${installation.target} Skill link that changed during deletion.`);
+        }
+        const backupPath = path.join(
+          path.dirname(installation.path),
+          `.${path.basename(installation.path)}.agent-recall-backup-${randomUUID()}`,
+        );
+        if (lstatIfPresent(backupPath)) {
+          throw new Error(`Refusing to overwrite an existing Skill deletion backup at ${backupPath}.`);
+        }
+        const stage: DeleteStage = {
+          originalPath: installation.path,
+          backupPath,
+          movedStat: null,
+        };
+        stagedLinks.push(stage);
+        fs.renameSync(stage.originalPath, stage.backupPath);
+        stage.movedStat = fs.lstatSync(stage.backupPath);
+        if (
+          !sameFileIdentity(stage.movedStat, owned.stat)
+          || !stage.movedStat.isSymbolicLink()
+          || !symlinkPointsToDirectory(stage.backupPath, skill.directoryPath)
+        ) {
+          throw new Error(`Refusing to remove a ${installation.target} Skill path that changed during deletion.`);
+        }
+      }
+
+      if (lstatIfPresent(sourceBackupPath)) {
+        throw new Error(`Refusing to overwrite an existing Skill deletion backup at ${sourceBackupPath}.`);
+      }
+      stagedSource = {
+        originalPath: skill.directoryPath,
+        backupPath: sourceBackupPath,
+        movedStat: null,
+      };
+      fs.renameSync(stagedSource.originalPath, stagedSource.backupPath);
+      stagedSource.movedStat = fs.lstatSync(stagedSource.backupPath);
+      if (
+        !sameFileIdentity(stagedSource.movedStat, managedSkillStat)
+        || !stagedSource.movedStat.isDirectory()
+        || stagedSource.movedStat.isSymbolicLink()
+      ) {
+        throw new Error(`Refusing to delete managed Skill ${normalizedId} because its source changed during deletion.`);
+      }
+
+      if (metadataStat) {
+        if (lstatIfPresent(metadataBackupPath)) {
+          throw new Error(`Refusing to overwrite an existing Skill deletion backup at ${metadataBackupPath}.`);
+        }
+        stagedMetadata = {
+          originalPath: metadataPath,
+          backupPath: metadataBackupPath,
+          movedStat: null,
+        };
+        fs.renameSync(stagedMetadata.originalPath, stagedMetadata.backupPath);
+        stagedMetadata.movedStat = fs.lstatSync(stagedMetadata.backupPath);
+        if (
+          !sameFileIdentity(stagedMetadata.movedStat, metadataStat)
+          || !stagedMetadata.movedStat.isFile()
+        ) {
+          throw new Error(`Refusing to delete managed Skill ${normalizedId} because its metadata changed during deletion.`);
+        }
+      }
+    } catch (error) {
+      const rollbackErrors: unknown[] = [];
+      const restore = (stage: DeleteStage | null): void => {
+        if (!stage) return;
+        try {
+          const backupStat = lstatIfPresent(stage.backupPath);
+          if (!backupStat) {
+            if (!stage.movedStat && lstatIfPresent(stage.originalPath)) return;
+            throw new Error(`Cannot restore missing Skill deletion backup ${stage.backupPath}.`);
+          }
+          if (stage.movedStat && !sameFileIdentity(backupStat, stage.movedStat)) {
+            throw new Error(`Refusing to restore a Skill deletion backup that changed at ${stage.backupPath}.`);
+          }
+          if (lstatIfPresent(stage.originalPath)) {
+            throw new Error(`Refusing to overwrite a path that appeared while restoring ${stage.originalPath}.`);
+          }
+          fs.renameSync(stage.backupPath, stage.originalPath);
+          if (
+            stage.movedStat
+            && !sameFileIdentity(fs.lstatSync(stage.originalPath), stage.movedStat)
+          ) {
+            throw new Error(`Skill deletion rollback verification failed for ${stage.originalPath}.`);
+          }
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+      };
+      restore(stagedSource);
+      restore(stagedMetadata);
+      for (const staged of [...stagedLinks].reverse()) restore(staged);
+      if (rollbackErrors.length > 0) {
+        throw new AggregateError(
+          [error, ...rollbackErrors],
+          "Failed to delete the managed Skill and fully restore its previous state.",
+        );
+      }
+      throw error;
+    }
+
+    const cleanup = (stage: DeleteStage | null, recursive = false): void => {
+      if (!stage?.movedStat) return;
+      try {
+        const backupStat = lstatIfPresent(stage.backupPath);
+        if (!backupStat || !sameFileIdentity(backupStat, stage.movedStat)) return;
+        if (recursive) {
+          fs.rmSync(stage.backupPath, { recursive: true, force: false });
+        } else {
+          fs.unlinkSync(stage.backupPath);
+        }
+      } catch {
+        // Deletion has committed. Hidden backups are deliberately retained
+        // when cleanup cannot complete so the deleted state stays consistent.
+      }
+    };
+    for (const staged of stagedLinks) cleanup(staged);
+    cleanup(stagedMetadata);
+    cleanup(stagedSource, true);
     return { deletedPath: skill.directoryPath, skillName: skill.name };
   }
 
@@ -629,6 +806,10 @@ function symlinkPointsToDirectory(linkPath: string, expectedDirectory: string): 
   } catch {
     return false;
   }
+}
+
+function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 function physicalEntryPath(entryPath: string): string {
