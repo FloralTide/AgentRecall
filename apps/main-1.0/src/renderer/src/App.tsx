@@ -68,6 +68,7 @@ import { DATE_RANGE_OPTIONS, dateRangeLabel, dateRangeShortLabel, resolveDateRan
 import {
   filterSessionsByLiveStatus,
   getLiveSessionState,
+  LiveSessionSnapshotRefreshCoordinator,
   type LiveSessionState,
   type LiveStatusFilter,
 } from "./live-filter";
@@ -322,6 +323,7 @@ export function App(): ReactElement {
   const [quotaLoading, setQuotaLoading] = useState(true);
   const [quotaFeedback, setQuotaFeedback] = useState<QuotaFeedback>(null);
   const [liveSessions, setLiveSessions] = useState<LiveSessionSnapshot>(EMPTY_LIVE_SESSIONS);
+  const liveSessionRefreshCoordinator = useRef(new LiveSessionSnapshotRefreshCoordinator()).current;
   const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [detail, setDetail] = useState<SessionSearchResult | null>(null);
@@ -558,11 +560,11 @@ export function App(): ReactElement {
     ]);
     if (completedIndexRefreshKeyRef.current === refreshKey) return completedIndexRefreshPromiseRef.current;
     completedIndexRefreshKeyRef.current = refreshKey;
-    const refreshPromise = (async () => {
-      await loadRef.current();
-      await loadSidebarMetadataRef.current();
-      await loadStatsRef.current();
-    })().catch((error) => {
+    const refreshPromise = Promise.all([
+      loadRef.current(),
+      loadSidebarMetadataRef.current(),
+      loadStatsRef.current(),
+    ]).then(() => undefined).catch((error) => {
       if (completedIndexRefreshKeyRef.current === refreshKey) completedIndexRefreshKeyRef.current = null;
       throw error;
     });
@@ -861,17 +863,13 @@ export function App(): ReactElement {
     }
   }, [t]);
 
-  const refreshLiveSessions = useCallback(async () => {
-    try {
-      setLiveSessions(await window.sessionSearch.getLiveSessions());
-    } catch (error) {
-      setLiveSessions({
-        generatedAt: new Date().toISOString(),
-        sessions: [],
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }, []);
+  const refreshLiveSessions = useCallback(
+    () => liveSessionRefreshCoordinator.refresh(
+      () => window.sessionSearch.getLiveSessions(),
+      setLiveSessions,
+    ),
+    [liveSessionRefreshCoordinator],
+  );
 
   useEffect(() => {
     const scopeChanged = previousSearchScopeKeyRef.current !== searchScopeKey;
