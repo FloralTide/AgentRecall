@@ -98,6 +98,26 @@ function carriesApiKey(update: { customApiKey?: string } | undefined): boolean {
   return Boolean(update) && typeof update?.customApiKey === "string";
 }
 
+type ProviderKeyTargetConfig = Pick<ApiConfig | ClaudeApiConfig, "activeProvider" | "customProviderId" | "customBaseUrl">;
+
+function normalizedProviderBaseUrl(baseUrl: string): string {
+  return baseUrl.trim().replace(/\/+$/, "");
+}
+
+function storedKeyCanHydrateTarget(
+  target: ProviderKeyTargetConfig,
+  savedTarget: ProviderKeyTargetConfig,
+  presets: ReadonlyArray<{ id: string; baseUrl: string }>,
+): boolean {
+  const targetBaseUrl = normalizedProviderBaseUrl(target.customBaseUrl);
+  const fixedPreset = presets.find((preset) => preset.id !== "custom" && preset.id === target.customProviderId);
+  if (fixedPreset && normalizedProviderBaseUrl(fixedPreset.baseUrl) === targetBaseUrl) return true;
+  return Boolean(targetBaseUrl)
+    && savedTarget.activeProvider === "custom"
+    && savedTarget.customProviderId === target.customProviderId
+    && normalizedProviderBaseUrl(savedTarget.customBaseUrl) === targetBaseUrl;
+}
+
 /** Human-readable provenance for the credential the connection test ended up using. */
 function summaryKeySource(typedKey: string, resolvedKey: string, store: ProviderKeyTarget): string | undefined {
   if (typedKey) return "API key field";
@@ -208,21 +228,39 @@ export class ProviderService {
         this.getSavedSummaryConfigPatch(),
         undefined,
       ),
+    }, {
+      codex: currentSettings.apiConfig,
+      claude: currentSettings.claudeApiConfig,
     });
   }
 
-  async addStoredKeys(settings: AppSettings): Promise<AppSettings> {
+  async addStoredKeys(
+    settings: AppSettings,
+    savedTargets?: { codex: ApiConfig; claude: ClaudeApiConfig },
+  ): Promise<AppSettings> {
     const next = { ...settings };
     if (next.apiConfig.activeProvider === "custom") {
       next.apiConfig = {
         ...next.apiConfig,
-        customApiKey: await this.dependencies.keys.get("codex", next.apiConfig.customProviderId),
+        customApiKey: !savedTargets || storedKeyCanHydrateTarget(
+          next.apiConfig,
+          savedTargets.codex,
+          API_PROVIDER_PRESETS,
+        )
+          ? await this.dependencies.keys.get("codex", next.apiConfig.customProviderId)
+          : "",
       };
     }
     if (next.claudeApiConfig.activeProvider === "custom") {
       next.claudeApiConfig = {
         ...next.claudeApiConfig,
-        customApiKey: await this.dependencies.keys.get("claude", next.claudeApiConfig.customProviderId),
+        customApiKey: !savedTargets || storedKeyCanHydrateTarget(
+          next.claudeApiConfig,
+          savedTargets.claude,
+          CLAUDE_API_PROVIDER_PRESETS,
+        )
+          ? await this.dependencies.keys.get("claude", next.claudeApiConfig.customProviderId)
+          : "",
       };
     }
     if (next.summaryApiConfigMode === "custom" && next.summaryApiConfig.activeProvider === "custom") {
@@ -391,11 +429,7 @@ export class ProviderService {
           throw new Error(`Base URL is required to test ${apiConfig.customProviderName}.`);
         }
         const requestedBaseUrl = apiConfig.customBaseUrl.trim().replace(/\/+$/, "");
-        const typedKey = apiConfig.customApiKey.trim();
-        const storedKey = (typedKey
-          ? ""
-          : await this.dependencies.keys.get("claude", apiConfig.customProviderId)).trim();
-        const providerKey = typedKey || storedKey;
+        const providerKey = apiConfig.customApiKey.trim();
         if (providerKey) {
           const authEnv = {
             ANTHROPIC_BASE_URL: requestedBaseUrl,
@@ -409,7 +443,7 @@ export class ProviderService {
             ...authEnv,
           };
           isolateConfigHome = true;
-          credentialSource = typedKey ? "API key field" : "AgentRecall claude key store";
+          credentialSource = "API key field";
         } else {
           const snapshot = await this.operations.loadClaudeConfigSnapshot(apiConfig.customConfigDir || undefined);
           const configuredBaseUrl = snapshot.route.customBaseUrl?.trim().replace(/\/+$/, "") ?? "";
@@ -460,16 +494,8 @@ export class ProviderService {
         if (!apiConfig.customBaseUrl.trim()) {
           throw new Error(`Base URL is required to test ${apiConfig.customProviderName}.`);
         }
-        const typedKey = apiConfig.customApiKey.trim();
-        const storedKey = (typedKey
-          ? ""
-          : await this.dependencies.keys.get("codex", apiConfig.customProviderId)).trim();
-        const providerKey = typedKey || storedKey;
-        credentialSource = typedKey
-          ? "API key field"
-          : storedKey
-            ? "AgentRecall codex key store"
-            : credentialSource;
+        const providerKey = apiConfig.customApiKey.trim();
+        if (providerKey) credentialSource = "API key field";
         const requestedBaseUrl = apiConfig.customBaseUrl.trim().replace(/\/+$/, "");
         if (!providerKey) {
           if (apiConfig.customApiFormat === "openai_chat") {

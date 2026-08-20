@@ -231,6 +231,74 @@ describe("AI summary source pane", () => {
     expect(button?.disabled).toBe(false);
   });
 
+  it("clears hydrated Codex and Claude keys when their manual Base URLs change", async () => {
+    const settings = structuredClone(defaultSettings);
+    settings.apiConfig = {
+      ...settings.apiConfig,
+      activeProvider: "custom",
+      customProviderId: "custom",
+      customProviderName: "Custom Codex",
+      customBaseUrl: "https://old-codex.example/v1",
+      customApiKey: "hydrated-codex-key",
+      customModel: "gpt-test",
+    };
+    settings.claudeApiConfig = {
+      ...settings.claudeApiConfig,
+      activeProvider: "custom",
+      customProviderId: "custom",
+      customProviderName: "Custom Claude",
+      customBaseUrl: "https://old-claude.example/anthropic",
+      customApiKey: "hydrated-claude-key",
+      customModel: "claude-test",
+    };
+    await mountDialog(settings);
+
+    const codexFields = [...container.querySelectorAll<HTMLElement>(".settings-field")];
+    const codexBaseUrl = codexFields
+      .find((row) => row.querySelector(".settings-field-title")?.textContent === "Base URL")
+      ?.querySelector<HTMLInputElement>("input");
+    const codexKey = codexFields
+      .find((row) => row.querySelector(".settings-field-title")?.textContent === "API Key")
+      ?.querySelector<HTMLInputElement>("input");
+    expect(codexKey?.value).toBe("hydrated-codex-key");
+
+    await typeInto(codexBaseUrl!, "https://new-codex.example/v1");
+
+    expect(codexKey?.value).toBe("");
+    const codexTest = container.querySelector<HTMLButtonElement>('[data-provider-connection-test="codex"]');
+    await act(async () => codexTest?.click());
+    expect(testProviderConnection).toHaveBeenLastCalledWith({
+      target: "codex",
+      apiConfig: expect.objectContaining({
+        customBaseUrl: "https://new-codex.example/v1",
+        customApiKey: "",
+      }),
+    });
+
+    await selectTarget("Claude Code");
+    const claudeFields = [...container.querySelectorAll<HTMLElement>(".settings-field")];
+    const claudeBaseUrl = claudeFields
+      .find((row) => row.querySelector(".settings-field-title")?.textContent === "Base URL")
+      ?.querySelector<HTMLInputElement>("input");
+    const claudeKey = claudeFields
+      .find((row) => row.querySelector(".settings-field-title")?.textContent === "API Key")
+      ?.querySelector<HTMLInputElement>("input");
+    expect(claudeKey?.value).toBe("hydrated-claude-key");
+
+    await typeInto(claudeBaseUrl!, "https://new-claude.example/anthropic");
+
+    expect(claudeKey?.value).toBe("");
+    const claudeTest = container.querySelector<HTMLButtonElement>('[data-provider-connection-test="claude"]');
+    await act(async () => claudeTest?.click());
+    expect(testProviderConnection).toHaveBeenLastCalledWith({
+      target: "claude",
+      apiConfig: expect.objectContaining({
+        customBaseUrl: "https://new-claude.example/anthropic",
+        customApiKey: "",
+      }),
+    });
+  });
+
   it("renders the same eight rows in the same order for every source", async () => {
     await mountSummaryPane();
 

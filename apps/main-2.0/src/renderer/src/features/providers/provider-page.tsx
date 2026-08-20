@@ -31,6 +31,16 @@ function hasSavedCustomRoute(
     && Boolean(config.customBaseUrl.trim() || config.customModel.trim() || config.customApiKey.trim());
 }
 
+function providerTargetMatches(
+  config: Pick<ApiConfig | ClaudeApiConfig, "activeProvider" | "customProviderId" | "customBaseUrl"> | null | undefined,
+  providerId: string,
+  baseUrl: string,
+): boolean {
+  return config?.activeProvider === "custom"
+    && config.customProviderId === providerId
+    && normalizeProviderBaseUrl(config.customBaseUrl) === normalizeProviderBaseUrl(baseUrl);
+}
+
 function buildSummaryDraftFromSettings(settings: AppSettings | null): ApiConfig {
   return settings?.summaryApiConfig ?? { ...defaultApiConfig };
 }
@@ -142,21 +152,26 @@ export function ProviderPage({
     const activeProvider = snapshot.providers.find((provider) => provider.id === snapshot.activeProviderId);
     if (!activeProvider || snapshot.activeProviderId === "openai") {
       setSelectedCodexConfigProviderId("");
-      setDraftApiConfig((current) => ({ ...current, activeProvider: "official" }));
+      setDraftApiConfig((current) => ({ ...current, activeProvider: "official", customApiKey: "" }));
       return;
     }
     const preset = API_PROVIDER_PRESETS.find(
       (item) => item.id !== "custom" && (item.id === activeProvider.id || normalizeProviderBaseUrl(item.baseUrl) === normalizeProviderBaseUrl(activeProvider.baseUrl)),
     );
+    const nextProviderId = preset?.id ?? activeProvider.id;
+    const nextBaseUrl = activeProvider.baseUrl || preset?.baseUrl || "";
     setSelectedCodexConfigProviderId(preset ? "" : activeProvider.id);
     setDraftApiConfig((current) => ({
       ...current,
       activeProvider: "custom",
       // A preset match must keep the preset's own id, otherwise the preset button stops
       // looking selected and the stored key is looked up under the wrong name.
-      customProviderId: preset?.id ?? activeProvider.id,
+      customProviderId: nextProviderId,
       customProviderName: preset?.providerName ?? activeProvider.name ?? activeProvider.id,
-      customBaseUrl: activeProvider.baseUrl || preset?.baseUrl || current.customBaseUrl,
+      customBaseUrl: nextBaseUrl || current.customBaseUrl,
+      customApiKey: Boolean(nextBaseUrl) && providerTargetMatches(current, nextProviderId, nextBaseUrl)
+        ? current.customApiKey
+        : "",
       customModel: snapshot.activeModel || preset?.model || current.customModel,
       customApiFormat: activeProvider.wireApi === "chat" ? "openai_chat" : preset?.apiFormat ?? "openai_responses",
     }));
@@ -166,17 +181,21 @@ export function ProviderPage({
     `${snapshot.configPath}:${snapshot.activeProviderId}:${snapshot.activeModel}:${snapshot.providers.map((provider) => `${provider.id}:${provider.baseUrl}`).join("|")}`;
 
   const claudeConfigHydrationKey = (snapshot: ClaudeConfigSnapshot) =>
-    `${snapshot.settingsPath}:${snapshot.route.activeProvider}:${snapshot.route.customBaseUrl}:${snapshot.route.customModel}`;
+    `${snapshot.settingsPath}:${snapshot.route.activeProvider}:${snapshot.route.customProviderId}:${snapshot.route.customBaseUrl}:${snapshot.route.customModel}`;
 
   const hydrateDraftFromClaudeConfig = (snapshot: ClaudeConfigSnapshot, configDir?: string) => {
     if (snapshot.route.activeProvider !== "custom") return;
     setSelectedClaudeConfigRoute("config");
-    setDraftClaudeApiConfig((current) => ({
-      ...current,
-      ...snapshot.route,
-      customConfigDir: configDir ?? current.customConfigDir,
-      customApiKey: current.customApiKey,
-    }));
+    setDraftClaudeApiConfig((current) => {
+      const nextProviderId = snapshot.route.customProviderId ?? current.customProviderId;
+      const nextBaseUrl = snapshot.route.customBaseUrl ?? current.customBaseUrl;
+      return {
+        ...current,
+        ...snapshot.route,
+        customConfigDir: configDir ?? current.customConfigDir,
+        customApiKey: providerTargetMatches(current, nextProviderId, nextBaseUrl) ? current.customApiKey : "",
+      };
+    });
   };
 
   const selectClaudeConfigRoute = (useConfigRoute: boolean) => {
@@ -194,21 +213,34 @@ export function ProviderPage({
   const selectApiPreset = async (presetId: ApiProviderPresetId) => {
     const selectionId = ++apiPresetSelectionRef.current;
     const preset = API_PROVIDER_PRESETS.find((item) => item.id === presetId) ?? API_PROVIDER_PRESETS[0];
-    const apiKey = await window.sessionSearch.getApiProviderKey("codex", preset.id).catch(() => "");
+    const activeProvider = preset.id === "custom"
+      ? codexConfig?.providers.find((provider) => provider.id === codexConfig.activeProviderId)
+      : undefined;
+    const nextProviderId = activeProvider?.id ?? preset.id;
+    const apiKey = preset.id === "custom"
+      ? ""
+      : await window.sessionSearch.getApiProviderKey("codex", preset.id).catch(() => "");
     if (selectionId !== apiPresetSelectionRef.current) return;
     if (preset.id === "custom") {
-      const activeProvider = codexConfig?.providers.find((provider) => provider.id === codexConfig.activeProviderId);
       setSelectedCodexConfigProviderId(activeProvider?.id ?? "");
-      setDraftApiConfig((current) => ({
-        ...current,
-        activeProvider: "custom",
-        customProviderId: "custom",
-        customProviderName: activeProvider?.name || current.customProviderName || preset.providerName,
-        customBaseUrl: activeProvider?.baseUrl || current.customBaseUrl,
-        customApiKey: apiKey || current.customApiKey,
-        customModel: codexConfig?.activeModel || current.customModel,
-        customApiFormat: activeProvider?.wireApi === "chat" ? "openai_chat" : current.customApiFormat || preset.apiFormat,
-      }));
+      setDraftApiConfig((current) => {
+        const nextBaseUrl = activeProvider?.baseUrl || current.customBaseUrl;
+        const reusableKey = providerTargetMatches(current, nextProviderId, nextBaseUrl)
+          ? current.customApiKey
+          : providerTargetMatches(settings?.apiConfig, nextProviderId, nextBaseUrl)
+            ? settings?.apiConfig.customApiKey ?? ""
+            : "";
+        return {
+          ...current,
+          activeProvider: "custom",
+          customProviderId: nextProviderId,
+          customProviderName: activeProvider?.name || current.customProviderName || preset.providerName,
+          customBaseUrl: nextBaseUrl,
+          customApiKey: reusableKey,
+          customModel: codexConfig?.activeModel || current.customModel,
+          customApiFormat: activeProvider?.wireApi === "chat" ? "openai_chat" : current.customApiFormat || preset.apiFormat,
+        };
+      });
     } else {
       setSelectedCodexConfigProviderId("");
       setDraftApiConfig((current) => ({
@@ -289,21 +321,28 @@ export function ProviderPage({
     // has typed, instead of snapping the select back to the previous provider.
     if (!providerId) {
       setSelectedCodexConfigProviderId("");
-      updateDraftApiConfig({ activeProvider: "custom", customProviderId: "custom" });
+      setDraftApiConfig((current) => ({
+        ...current,
+        activeProvider: "custom",
+        customProviderId: "custom",
+        customApiKey: providerTargetMatches(current, "custom", current.customBaseUrl) ? current.customApiKey : "",
+      }));
       return;
     }
     const provider = codexConfig?.providers.find((item) => item.id === providerId);
     if (!provider) return;
     setSelectedCodexConfigProviderId(provider.id);
-    updateDraftApiConfig({
+    setDraftApiConfig((current) => ({
+      ...current,
       activeProvider: "custom",
       // Keep the config's own id so the credential lookup and the applied config.toml
       // section both point at the provider the user just picked.
       customProviderId: provider.id,
       customProviderName: provider.name || provider.id,
       customBaseUrl: provider.baseUrl,
+      customApiKey: providerTargetMatches(current, provider.id, provider.baseUrl) ? current.customApiKey : "",
       customApiFormat: provider.wireApi === "chat" ? "openai_chat" : "openai_responses",
-    });
+    }));
   };
 
   const detectCodexModels = async () => {
@@ -764,18 +803,25 @@ export function ProviderPage({
   const selectClaudeApiPreset = async (presetId: ClaudeApiProviderPresetId) => {
     const selectionId = ++claudeApiPresetSelectionRef.current;
     const preset = CLAUDE_API_PROVIDER_PRESETS.find((item) => item.id === presetId) ?? CLAUDE_API_PROVIDER_PRESETS[0];
-    const apiKey = await window.sessionSearch.getApiProviderKey("claude", preset.id).catch(() => "");
+    const apiKey = preset.id === "custom"
+      ? ""
+      : await window.sessionSearch.getApiProviderKey("claude", preset.id).catch(() => "");
     if (selectionId !== claudeApiPresetSelectionRef.current) return;
     setDraftClaudeApiConfig((current) => {
       if (preset.id === "custom") {
+        const nextProviderId = "custom";
+        const nextBaseUrl = current.customBaseUrl;
+        const reusableKey = providerTargetMatches(current, nextProviderId, nextBaseUrl)
+          ? current.customApiKey
+          : providerTargetMatches(settings?.claudeApiConfig, nextProviderId, nextBaseUrl)
+            ? settings?.claudeApiConfig.customApiKey ?? ""
+            : "";
         return {
           ...current,
           activeProvider: "custom",
-          customProviderId: "custom",
+          customProviderId: nextProviderId,
           customProviderName: current.customProviderName || preset.providerName,
-          // Custom has no route of its own to restore, so a missing stored key must not
-          // erase whatever the user has already typed into the field.
-          customApiKey: apiKey || current.customApiKey,
+          customApiKey: reusableKey,
         };
       }
       return {
@@ -1086,7 +1132,14 @@ export function ProviderPage({
                       value={draftApiConfig.customBaseUrl}
                       disabled={!settings || saving}
                       placeholder="https://api.example.com/v1"
-                      onChange={(event) => updateDraftApiConfig({ customBaseUrl: event.currentTarget.value })}
+                      onChange={(event) => {
+                        setSelectedCodexConfigProviderId("");
+                        updateDraftApiConfig({
+                          customProviderId: "custom",
+                          customBaseUrl: event.currentTarget.value,
+                          customApiKey: "",
+                        });
+                      }}
                     />
                   </label>
                   <label className="settings-field">
@@ -1339,7 +1392,14 @@ export function ProviderPage({
                       value={draftClaudeApiConfig.customBaseUrl}
                       disabled={!settings || saving}
                       placeholder="https://api.example.com/anthropic"
-                      onChange={(event) => updateDraftClaudeApiConfig({ customBaseUrl: event.currentTarget.value })}
+                      onChange={(event) => {
+                        setSelectedClaudeConfigRoute("");
+                        updateDraftClaudeApiConfig({
+                          customProviderId: "custom",
+                          customBaseUrl: event.currentTarget.value,
+                          customApiKey: "",
+                        });
+                      }}
                     />
                   </label>
                   <label className="settings-field">
