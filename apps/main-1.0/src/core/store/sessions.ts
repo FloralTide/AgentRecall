@@ -1,4 +1,5 @@
 import type { SQLInputValue } from "node:sqlite";
+import { cleanTitle } from "../format-adapters";
 import {
   materializeSessionAttachment,
   MAX_SESSION_ATTACHMENT_BYTES,
@@ -2324,7 +2325,7 @@ export class SessionsStore {
   }
 
   private hydrateRow(row: SessionRow, snippet: string | null, tags = this.getTagsForSession(row.session_key)): SessionSearchResult {
-    const displayTitle = row.custom_title || row.original_title || row.first_question || "Untitled Session";
+    const displayTitle = row.custom_title || cleanTitle(row.original_title || row.first_question || "") || "Untitled Session";
     const environment = this.environments.getEnvironment(row.environment_id) ?? localEnvironment();
     return {
       sessionKey: row.session_key,

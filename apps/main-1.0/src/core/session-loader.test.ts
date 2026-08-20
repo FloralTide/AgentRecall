@@ -2506,6 +2506,34 @@ describe("Codex session loading", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it("decodes percent-encoded Codex titles from the first question or index name", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codex-encoded-title-"));
+    const filePath = path.join(dir, "rollout.jsonl");
+    const encoded = "https://example.com/p/1?from=search#1.2.1-%E4%BD%BF%E7%94%A8%E8%85%BE%E8%AE%AF%E4%BA";
+    fs.writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          type: "session_meta",
+          timestamp: "2026-06-01T10:00:00Z",
+          payload: { id: "codex-encoded-title", cwd: "/repo" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          timestamp: "2026-06-01T10:01:00Z",
+          payload: { type: "message", role: "user", content: [{ type: "input_text", text: encoded }] },
+        }),
+      ].join("\n"),
+    );
+
+    expect(loadCodexSessionFile(filePath)?.session.originalTitle)
+      .toBe("https://example.com/p/1?from=search#1.2.1-使用腾讯");
+    expect(loadCodexSessionFile(filePath, encoded)?.session.originalTitle)
+      .toBe("https://example.com/p/1?from=search#1.2.1-使用腾讯");
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("loads TCodex sessions with a separate source and session key namespace", () => {
     const codexDir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-tcodex-"));
     const sessionDir = path.join(codexDir, "sessions", "2026", "06", "01");

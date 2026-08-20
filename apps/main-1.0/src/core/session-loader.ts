@@ -1709,7 +1709,7 @@ function createLoadedCodexSession(
     source,
     projectPath: meta.projectPath,
     filePath,
-    originalTitle: options.title || meta.title || cleanTitle(question) || "Untitled Session",
+    originalTitle: cleanTitle(options.title || meta.title || question) || "Untitled Session",
     firstQuestion: question ? cleanTitle(question) : "",
     timestamp: options.updatedAt ? new Date(options.updatedAt).getTime() : meta.ts,
     gitBranch: meta.gitBranch,
