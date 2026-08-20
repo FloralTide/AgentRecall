@@ -414,11 +414,29 @@ function isCursorSubagentFollowUpInstruction(text: string): boolean {
   );
 }
 
+const MAX_TITLE_CODE_POINTS = 120;
+
+function decodeTitlePercentEncoding(text: string): string {
+  if (!/%[0-9A-Fa-f]{2}/.test(text)) return text;
+  return text.replace(/(?:%[0-9A-Fa-f]{2})+/g, (encoded) => {
+    let candidate = encoded;
+    while (candidate.length >= 3) {
+      try {
+        return decodeURIComponent(candidate);
+      } catch {
+        candidate = candidate.slice(0, -3);
+      }
+    }
+    return "";
+  });
+}
+
 export function cleanTitle(text: string): string {
   const stripped = text.trim().replace(/^<[^>]+>\s*/, "");
   const firstLine = stripped
     .split(/\r?\n/)
     .map((line) => line.trim())
     .find(Boolean);
-  return (firstLine || stripped).slice(0, 120);
+  const decoded = decodeTitlePercentEncoding(firstLine || stripped);
+  return Array.from(decoded).slice(0, MAX_TITLE_CODE_POINTS).join("").trim();
 }

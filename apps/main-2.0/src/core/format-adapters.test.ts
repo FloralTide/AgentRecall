@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { codexAdapter, getAdapter, getFormatForSource, workbuddyAdapter } from "./format-adapters";
+import { codexAdapter, cleanTitle, getAdapter, getFormatForSource, workbuddyAdapter } from "./format-adapters";
 
 describe("Codex format adapter", () => {
   it("strips subagent notifications from user messages", () => {
@@ -80,5 +80,24 @@ describe("WorkBuddy format adapter", () => {
       content: "code",
       timestamp: "2026-05-28T20:26:40.000Z",
     });
+  });
+});
+
+describe("cleanTitle", () => {
+  it("keeps the first useful line and truncates by code point", () => {
+    expect(cleanTitle("\n  Fix login flow\nsecond line")).toBe("Fix login flow");
+    expect(cleanTitle("x".repeat(200))).toHaveLength(120);
+  });
+
+  it("decodes percent-encoded titles and drops truncated UTF-8 sequences", () => {
+    expect(
+      cleanTitle("https://example.com/p/1?from=search#1.2.1-%E4%BD%BF%E7%94%A8%E8%85%BE%E8%AE%AF%E4%BA"),
+    ).toBe("https://example.com/p/1?from=search#1.2.1-使用腾讯");
+    const heading = "使用腾讯云文档做知识库检索与写作指南".repeat(8);
+    const cleaned = cleanTitle(`https://example.com/p/1#${encodeURIComponent(heading)}`);
+    expect(cleaned.startsWith("https://example.com/p/1#使用腾讯")).toBe(true);
+    expect(cleaned).not.toMatch(/%/);
+    expect(Array.from(cleaned)).toHaveLength(120);
+    expect(cleanTitle("keep 100% done")).toBe("keep 100% done");
   });
 });

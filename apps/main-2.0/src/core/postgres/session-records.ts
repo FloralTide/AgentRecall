@@ -1,3 +1,4 @@
+import { cleanTitle } from "../format-adapters";
 import type {
   EnvironmentKind,
   SessionSearchResult,
@@ -387,7 +388,7 @@ export function hydrateSession(
   row: SessionRow,
   queryTerms: readonly string[] = [],
 ): SessionSearchResult {
-  const displayTitle = row.custom_title || row.original_title || row.first_question || "Untitled Session";
+  const displayTitle = row.custom_title || cleanTitle(row.original_title || row.first_question || "") || "Untitled Session";
   const bestTurn = bestTurnFromRow(row, queryTerms);
   const result: SessionSearchResult = {
     sessionKey: row.session_key,

@@ -254,6 +254,18 @@ describe("format adapters", () => {
     expect(cleanTitle("x".repeat(200))).toHaveLength(120);
   });
 
+  it("decodes percent-encoded titles and drops truncated UTF-8 sequences", () => {
+    expect(
+      cleanTitle("https://example.com/p/1?from=search#1.2.1-%E4%BD%BF%E7%94%A8%E8%85%BE%E8%AE%AF%E4%BA"),
+    ).toBe("https://example.com/p/1?from=search#1.2.1-使用腾讯");
+    const heading = "使用腾讯云文档做知识库检索与写作指南".repeat(8);
+    const cleaned = cleanTitle(`https://example.com/p/1#${encodeURIComponent(heading)}`);
+    expect(cleaned.startsWith("https://example.com/p/1#使用腾讯")).toBe(true);
+    expect(cleaned).not.toMatch(/%/);
+    expect(Array.from(cleaned)).toHaveLength(120);
+    expect(cleanTitle("keep 100% done")).toBe("keep 100% done");
+  });
+
   it("extracts Cursor user_query and skips tool blocks", () => {
     expect(extractCursorUserQuery("<timestamp>Sunday</timestamp>\n<user_query>\nFix sidebar\n</user_query>")).toBe("Fix sidebar");
 
