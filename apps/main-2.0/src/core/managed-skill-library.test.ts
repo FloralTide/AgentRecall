@@ -42,6 +42,23 @@ function createManagedSkillFixture() {
   };
 }
 
+function aliasCodexAndSharedSkillParents(fixture: ReturnType<typeof createManagedSkillFixture>) {
+  const codexSkillsParent = path.join(fixture.homeDir, ".codex", "skills");
+  const sharedSkillsParent = path.join(fixture.homeDir, ".agents", "skills");
+  fs.mkdirSync(sharedSkillsParent, { recursive: true });
+  fs.mkdirSync(path.dirname(codexSkillsParent), { recursive: true });
+  fs.symlinkSync(
+    sharedSkillsParent,
+    codexSkillsParent,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  return {
+    codexSkillsParent,
+    sharedSkillsParent,
+    sharedTargetPath: path.join(sharedSkillsParent, fixture.managedId),
+  };
+}
+
 function replaceSymlinkSync(replacement: typeof fs.symlinkSync): () => void {
   const original = mutableFs.symlinkSync;
   mutableFs.symlinkSync = replacement;
@@ -188,16 +205,7 @@ describe("ManagedSkillLibrary conflicting installation targets", () => {
 
   it("rejects divergent targets whose parent directories alias the same physical entry", () => {
     const fixture = createManagedSkillFixture();
-    const codexSkillsParent = path.join(fixture.homeDir, ".codex", "skills");
-    const sharedSkillsParent = path.join(fixture.homeDir, ".agents", "skills");
-    const sharedTargetPath = path.join(sharedSkillsParent, fixture.managedId);
-    fs.mkdirSync(sharedSkillsParent, { recursive: true });
-    fs.mkdirSync(path.dirname(codexSkillsParent), { recursive: true });
-    fs.symlinkSync(
-      sharedSkillsParent,
-      codexSkillsParent,
-      process.platform === "win32" ? "junction" : "dir",
-    );
+    const { sharedSkillsParent, sharedTargetPath } = aliasCodexAndSharedSkillParents(fixture);
 
     expect(() => fixture.library.updateTargets(fixture.managedId, ["codex"]))
       .toThrow("resolve to the same path");
@@ -217,6 +225,89 @@ describe("ManagedSkillLibrary conflicting installation targets", () => {
     expect(fs.lstatSync(sharedTargetPath).isSymbolicLink()).toBe(true);
     expect(fs.realpathSync(sharedTargetPath)).toBe(fs.realpathSync(fixture.managedSkillPath));
     expect(fs.readdirSync(sharedSkillsParent)).toEqual([fixture.managedId]);
+  });
+
+  it("preserves installed aliases while installing an unrelated target", () => {
+    const fixture = createManagedSkillFixture();
+    const { sharedTargetPath } = aliasCodexAndSharedSkillParents(fixture);
+    fs.symlinkSync(
+      fixture.managedSkillPath,
+      sharedTargetPath,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    const updated = fixture.library.updateTargets(
+      fixture.managedId,
+      ["codex", "codex-shared", "claude"],
+    );
+
+    expect(updated.installations.find((item) => item.target === "codex")?.state).toBe("installed");
+    expect(updated.installations.find((item) => item.target === "codex-shared")?.state).toBe("installed");
+    expect(updated.installations.find((item) => item.target === "claude")?.state).toBe("installed");
+    expect(fs.realpathSync(sharedTargetPath)).toBe(fs.realpathSync(fixture.managedSkillPath));
+  });
+
+  it("clears a shared physical link exactly once when every alias is unselected", () => {
+    const fixture = createManagedSkillFixture();
+    const { sharedSkillsParent, sharedTargetPath } = aliasCodexAndSharedSkillParents(fixture);
+    fs.symlinkSync(
+      fixture.managedSkillPath,
+      sharedTargetPath,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    const updated = fixture.library.updateTargets(fixture.managedId, []);
+
+    expect(updated.installations.find((item) => item.target === "codex")?.state).toBe("not-installed");
+    expect(updated.installations.find((item) => item.target === "codex-shared")?.state).toBe("not-installed");
+    expect(fs.existsSync(sharedTargetPath)).toBe(false);
+    expect(fs.readdirSync(sharedSkillsParent)).toEqual([]);
+  });
+
+  it("creates one shared physical link when every alias is selected", () => {
+    const fixture = createManagedSkillFixture();
+    const { sharedTargetPath } = aliasCodexAndSharedSkillParents(fixture);
+    const originalSymlinkSync = mutableFs.symlinkSync;
+    let symlinkCalls = 0;
+    const restoreSymlinkSync = replaceSymlinkSync((target, linkPath, type) => {
+      symlinkCalls += 1;
+      originalSymlinkSync(target, linkPath, type);
+    });
+
+    let updated;
+    try {
+      updated = fixture.library.updateTargets(fixture.managedId, ["codex", "codex-shared"]);
+    } finally {
+      restoreSymlinkSync();
+    }
+
+    expect(symlinkCalls).toBe(1);
+    expect(updated.installations.find((item) => item.target === "codex")?.state).toBe("installed");
+    expect(updated.installations.find((item) => item.target === "codex-shared")?.state).toBe("installed");
+    expect(fs.realpathSync(sharedTargetPath)).toBe(fs.realpathSync(fixture.managedSkillPath));
+  });
+
+  it("requires explicit force authorization for every selected conflicting alias", () => {
+    const fixture = createManagedSkillFixture();
+    const { sharedTargetPath } = aliasCodexAndSharedSkillParents(fixture);
+    fs.mkdirSync(sharedTargetPath);
+    fs.writeFileSync(path.join(sharedTargetPath, "local-only.txt"), "shared conflict");
+
+    expect(() => fixture.library.updateTargets(
+      fixture.managedId,
+      ["codex", "codex-shared"],
+      ["codex"],
+    )).toThrow("codex-shared Skill target conflicts");
+    expect(fs.readFileSync(path.join(sharedTargetPath, "local-only.txt"), "utf8")).toBe("shared conflict");
+
+    const updated = fixture.library.updateTargets(
+      fixture.managedId,
+      ["codex", "codex-shared"],
+      ["codex", "codex-shared"],
+    );
+    expect(updated.installations.find((item) => item.target === "codex")?.state).toBe("installed");
+    expect(updated.installations.find((item) => item.target === "codex-shared")?.state).toBe("installed");
+    expect(fs.existsSync(path.join(sharedTargetPath, "local-only.txt"))).toBe(false);
   });
 
   it("installs a normal target and force replaces a conflicting target in one update", () => {
@@ -432,6 +523,78 @@ describe("ManagedSkillLibrary conflicting installation targets", () => {
     expect(fs.lstatSync(targetPath).isDirectory()).toBe(true);
     expect(fs.readFileSync(path.join(targetPath, "external.txt"), "utf8")).toBe("appeared during update");
     expect(fs.readdirSync(path.dirname(targetPath))).toEqual([fixture.managedId]);
+  });
+
+  it.each(["ENOTDIR", "ELOOP"] as const)(
+    "keeps unrelated targets usable when an install root reports %s",
+    (failureCode) => {
+      const fixture = createManagedSkillFixture();
+      const codexRoot = path.join(fixture.homeDir, ".codex");
+      const codexSkillsRoot = path.join(codexRoot, "skills");
+      const claudeTargetPath = path.join(fixture.homeDir, ".claude", "skills", fixture.managedId);
+      fs.mkdirSync(codexRoot, { recursive: true });
+      if (failureCode === "ENOTDIR") {
+        fs.writeFileSync(codexSkillsRoot, "not a directory");
+      } else {
+        fs.symlinkSync(
+          codexSkillsRoot,
+          codexSkillsRoot,
+          process.platform === "win32" ? "junction" : "dir",
+        );
+      }
+
+      const listed = fixture.library.list().skills[0];
+      expect(listed.installations.find((item) => item.target === "codex")?.state).toBe("conflict");
+
+      const updated = fixture.library.updateTargets(fixture.managedId, ["claude"]);
+      expect(updated.installations.find((item) => item.target === "claude")?.state).toBe("installed");
+
+      let requestedError: NodeJS.ErrnoException | undefined;
+      try {
+        fixture.library.updateTargets(fixture.managedId, ["codex"], ["codex"]);
+      } catch (error) {
+        requestedError = error as NodeJS.ErrnoException;
+      }
+      expect(requestedError?.code).toBe(failureCode);
+      expect(fs.lstatSync(claudeTargetPath).isSymbolicLink()).toBe(true);
+      if (failureCode === "ENOTDIR") {
+        expect(fs.readFileSync(codexSkillsRoot, "utf8")).toBe("not a directory");
+      } else {
+        expect(fs.lstatSync(codexSkillsRoot).isSymbolicLink()).toBe(true);
+      }
+    },
+  );
+
+  it.runIf(
+    process.platform !== "win32"
+    && typeof process.getuid === "function"
+    && process.getuid() !== 0,
+  )("keeps unrelated targets usable when an install root is inaccessible", () => {
+    const fixture = createManagedSkillFixture();
+    const codexRoot = path.join(fixture.homeDir, ".codex");
+    const codexSkillsRoot = path.join(codexRoot, "skills");
+    const claudeTargetPath = path.join(fixture.homeDir, ".claude", "skills", fixture.managedId);
+    fs.mkdirSync(codexSkillsRoot, { recursive: true });
+    fs.chmodSync(codexRoot, 0);
+
+    let requestedError: NodeJS.ErrnoException | undefined;
+    try {
+      const listed = fixture.library.list().skills[0];
+      expect(listed.installations.find((item) => item.target === "codex")?.state).toBe("conflict");
+      const updated = fixture.library.updateTargets(fixture.managedId, ["claude"]);
+      expect(updated.installations.find((item) => item.target === "claude")?.state).toBe("installed");
+      try {
+        fixture.library.updateTargets(fixture.managedId, ["codex"], ["codex"]);
+      } catch (error) {
+        requestedError = error as NodeJS.ErrnoException;
+      }
+    } finally {
+      fs.chmodSync(codexRoot, 0o700);
+    }
+
+    expect(requestedError?.code).toBe("EACCES");
+    expect(fs.lstatSync(claudeTargetPath).isSymbolicLink()).toBe(true);
+    expect(fs.readdirSync(codexSkillsRoot)).toEqual([]);
   });
 
   it("keeps the committed target state when hidden backup cleanup fails", () => {

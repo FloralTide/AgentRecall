@@ -259,32 +259,12 @@ export class ManagedSkillLibrary {
       throw new Error("A forced Skill installation target must also be selected.");
     }
     const installations = INSTALL_TARGETS.map((target) => this.inspectInstallation(managedId, target));
-    const unforcedConflict = installations.find((installation) =>
-      requestedTargets.has(installation.target)
-      && installation.state === "conflict"
-      && !requestedForceTargets.has(installation.target));
-    if (unforcedConflict) {
-      throw new Error(
-        `The ${unforcedConflict.target} Skill target conflicts with an existing path and requires explicit force installation.`,
-      );
-    }
-    const stagedPaths: Array<{ originalPath: string; backupPath: string }> = [];
-    const pathsToStage = installations.filter((installation) =>
-      (!requestedTargets.has(installation.target) && installation.state === "installed")
-      || (
-        requestedTargets.has(installation.target)
-        && requestedForceTargets.has(installation.target)
-        && installation.state === "conflict"
-      ));
-    const linksToCreate = installations.filter((installation) =>
-      requestedTargets.has(installation.target)
-      && (
-        installation.state === "not-installed"
-        || (installation.state === "conflict" && requestedForceTargets.has(installation.target))
-      ));
     const managedSkillRealPath = fs.realpathSync(skill.directoryPath);
-    const physicalTargetPaths = new Map<SkillInstallTarget, { path: string; key: string }>();
-    const physicalAliases = new Map<string, ManagedSkillInstallation[]>();
+    const physicalGroups = new Map<string, {
+      key: string;
+      path: string;
+      installations: ManagedSkillInstallation[];
+    }>();
     for (const installation of installations) {
       let physicalTargetPath: string;
       try {
@@ -294,47 +274,76 @@ export class ManagedSkillLibrary {
         continue;
       }
       const physicalTargetKey = comparablePath(physicalTargetPath, this.platform);
-      physicalTargetPaths.set(installation.target, { path: physicalTargetPath, key: physicalTargetKey });
-      const aliases = physicalAliases.get(physicalTargetKey) ?? [];
-      aliases.push(installation);
-      physicalAliases.set(physicalTargetKey, aliases);
+      const group = physicalGroups.get(physicalTargetKey) ?? {
+        key: physicalTargetKey,
+        path: physicalTargetPath,
+        installations: [],
+      };
+      group.installations.push(installation);
+      physicalGroups.set(physicalTargetKey, group);
     }
-    for (const aliases of physicalAliases.values()) {
-      if (
-        aliases.length > 1
-        && aliases.some((installation) =>
-          requestedTargets.has(installation.target) || installation.state === "installed")
-      ) {
+    const targetPlans = [...physicalGroups.values()].map((group) => {
+      const states = new Set(group.installations.map((installation) => installation.state));
+      if (states.size !== 1) {
         throw new Error(
-          `Refusing to update Skill targets ${aliases.map((installation) => installation.target).join(", ")} because they resolve to the same path.`,
+          `Refusing to update Skill targets ${group.installations.map((installation) => installation.target).join(", ")} because their shared physical path has inconsistent state.`,
         );
       }
-    }
-    for (const installation of [...pathsToStage, ...linksToCreate]) {
-      const physicalTarget = physicalTargetPaths.get(installation.target);
-      if (!physicalTarget) {
-        throw new Error(`Cannot resolve the physical path of Skill target ${installation.target}.`);
+      const requestedIntents = new Set(
+        group.installations.map((installation) => requestedTargets.has(installation.target)),
+      );
+      if (requestedIntents.size !== 1) {
+        throw new Error(
+          `Refusing to update Skill targets ${group.installations.map((installation) => installation.target).join(", ")} because they resolve to the same path with different requested installation intent.`,
+        );
       }
-      if (pathsOverlap(physicalTarget.path, managedSkillRealPath, this.platform)) {
-        throw new Error(`Refusing to update an overlapping managed Skill target at ${installation.path}.`);
+      const state = group.installations[0].state;
+      const requested = requestedTargets.has(group.installations[0].target);
+      if (
+        state === "conflict"
+        && requested
+        && group.installations.some((installation) => !requestedForceTargets.has(installation.target))
+      ) {
+        throw new Error(
+          `The ${group.installations.find((installation) => !requestedForceTargets.has(installation.target))!.target} Skill target conflicts with an existing path and requires explicit force installation.`,
+        );
+      }
+      return {
+        ...group,
+        state,
+        requested,
+        representative: group.installations[0],
+      };
+    });
+    const pathsToStage = targetPlans.filter((plan) =>
+      (!plan.requested && plan.state === "installed")
+      || (plan.requested && plan.state === "conflict"));
+    const linksToCreate = targetPlans.filter((plan) =>
+      plan.requested && (plan.state === "not-installed" || plan.state === "conflict"));
+    for (const plan of [...pathsToStage, ...linksToCreate]) {
+      if (pathsOverlap(plan.path, managedSkillRealPath, this.platform)) {
+        throw new Error(`Refusing to update an overlapping managed Skill target at ${plan.representative.path}.`);
       }
     }
 
-    const createdLinks: ManagedSkillInstallation[] = [];
+    const stagedPaths: Array<{ originalPath: string; backupPath: string }> = [];
+    const createdLinks: typeof linksToCreate = [];
     try {
-      for (const installation of pathsToStage) {
+      for (const plan of pathsToStage) {
+        const installation = plan.representative;
         if (
           comparablePath(physicalEntryPath(installation.path), this.platform)
-          !== physicalTargetPaths.get(installation.target)?.key
+          !== plan.key
         ) {
           throw new Error(`Refusing to update a ${installation.target} Skill target whose parent path changed.`);
         }
-        const removingOwnedLink = !requestedTargets.has(installation.target);
-        if (
-          removingOwnedLink
-          && this.inspectInstallation(managedId, installation.target).state !== "installed"
-        ) {
-          throw new Error(`Refusing to remove a ${installation.target} Skill link that is no longer owned by AgentRecall.`);
+        const removingOwnedLink = !plan.requested;
+        if (removingOwnedLink) {
+          for (const alias of plan.installations) {
+            if (this.inspectInstallation(managedId, alias.target).state !== "installed") {
+              throw new Error(`Refusing to remove a ${alias.target} Skill link that is no longer owned by AgentRecall.`);
+            }
+          }
         }
         const backupPath = path.join(
           path.dirname(installation.path),
@@ -346,28 +355,34 @@ export class ManagedSkillLibrary {
           throw new Error(`Refusing to remove a ${installation.target} Skill path that changed during the update.`);
         }
       }
-      for (const installation of linksToCreate) {
+      for (const plan of linksToCreate) {
+        const installation = plan.representative;
         fs.mkdirSync(path.dirname(installation.path), { recursive: true });
         if (
           comparablePath(physicalEntryPath(installation.path), this.platform)
-          !== physicalTargetPaths.get(installation.target)?.key
+          !== plan.key
         ) {
           throw new Error(`Refusing to install a ${installation.target} Skill target whose parent path changed.`);
         }
         fs.symlinkSync(skill.directoryPath, installation.path, managedSkillLinkType(this.platform));
-        createdLinks.push(installation);
-        if (this.inspectInstallation(managedId, installation.target).state !== "installed") {
-          throw new Error(`Managed Skill link verification failed for ${installation.target}.`);
+        createdLinks.push(plan);
+        for (const alias of plan.installations) {
+          if (this.inspectInstallation(managedId, alias.target).state !== "installed") {
+            throw new Error(`Managed Skill link verification failed for ${alias.target}.`);
+          }
         }
       }
     } catch (error) {
       const rollbackErrors: unknown[] = [];
-      for (const installation of [...createdLinks].reverse()) {
+      for (const plan of [...createdLinks].reverse()) {
+        const installation = plan.representative;
         try {
-          const state = this.inspectInstallation(managedId, installation.target).state;
-          if (state === "installed") {
+          const states = new Set(
+            plan.installations.map((alias) => this.inspectInstallation(managedId, alias.target).state),
+          );
+          if (states.size === 1 && states.has("installed")) {
             fs.unlinkSync(installation.path);
-          } else if (state === "conflict") {
+          } else if (!(states.size === 1 && states.has("not-installed"))) {
             throw new Error(`Refusing to remove an unowned path while rolling back ${installation.target}.`);
           }
         } catch (rollbackError) {
@@ -542,8 +557,11 @@ export class ManagedSkillLibrary {
     try {
       stat = fs.lstatSync(targetPath);
     } catch (error) {
-      if (!isMissingPathError(error)) throw error;
-      return { target, path: targetPath, state: "not-installed" };
+      return {
+        target,
+        path: targetPath,
+        state: isMissingPathError(error) ? "not-installed" : "conflict",
+      };
     }
     if (!stat.isSymbolicLink()) return { target, path: targetPath, state: "conflict" };
     try {
