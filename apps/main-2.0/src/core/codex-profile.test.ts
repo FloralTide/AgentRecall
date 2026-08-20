@@ -864,6 +864,55 @@ describe("loadActiveCodexSummaryEndpointDefaults", () => {
     return expect(loadActiveCodexSummaryEndpointDefaults(codexHome)).resolves.toBeNull();
   });
 
+  it("does not execute credential helpers while loading background defaults", async () => {
+    const customMarker = path.join(codexHome, "custom-helper-ran");
+    const customHelperArgs = [
+      "-e",
+      `require("node:fs").writeFileSync(${JSON.stringify(customMarker)}, "ran"); process.stdout.write("custom-key")`,
+    ];
+    writeFileSync(
+      path.join(codexHome, "config.toml"),
+      [
+        'model = "provider-model"',
+        'model_provider = "gateway"',
+        "",
+        "[model_providers.gateway]",
+        'base_url = "https://gateway.example/v1"',
+        "",
+        "[model_providers.gateway.auth]",
+        `command = ${JSON.stringify(process.execPath)}`,
+        `args = ${JSON.stringify(customHelperArgs)}`,
+        `cwd = ${JSON.stringify(codexHome)}`,
+      ].join("\n"),
+    );
+
+    await expect(loadActiveCodexSummaryEndpointDefaults(codexHome)).resolves.toBeNull();
+    await expect(readFile(customMarker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+
+    const borrowedMarker = path.join(codexHome, "borrowed-helper-ran");
+    const borrowedHelperArgs = [
+      "-e",
+      `require("node:fs").writeFileSync(${JSON.stringify(borrowedMarker)}, "ran"); process.stdout.write("borrowed-key")`,
+    ];
+    writeFileSync(
+      path.join(codexHome, "config.toml"),
+      [
+        'model = "gpt-5.5"',
+        "",
+        "[model_providers.gateway]",
+        'base_url = "https://gateway.example/v1"',
+        "",
+        "[model_providers.gateway.auth]",
+        `command = ${JSON.stringify(process.execPath)}`,
+        `args = ${JSON.stringify(borrowedHelperArgs)}`,
+        `cwd = ${JSON.stringify(codexHome)}`,
+      ].join("\n"),
+    );
+
+    await expect(loadActiveCodexSummaryEndpointDefaults(codexHome)).resolves.toBeNull();
+    await expect(readFile(borrowedMarker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("falls back to OPENAI_API_KEY for the official provider", async () => {
     writeFileSync(path.join(codexHome, "config.toml"), 'model = "gpt-5.5"\n');
     writeFileSync(

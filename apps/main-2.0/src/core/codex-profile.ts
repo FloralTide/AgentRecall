@@ -186,7 +186,7 @@ export async function probeCodexModels(input: CodexModelProbeInput, fetchImpl: P
   const providerId = input.providerId || await readActiveCodexProviderId(input.codexHome);
   // Always consult the Codex config: a manually typed Custom route has no section of
   // its own, and the summary route falls back to whatever Codex is already using.
-  const configProvider = await readCodexConfigProviderSecret(providerId, input.codexHome);
+  const configProvider = await readCodexConfigProviderSecret(providerId, input.codexHome, true);
   const baseUrl = normalizeBaseUrl(input.baseUrl || configProvider?.baseUrl || "");
   const explicitKey = input.apiKey.trim();
   const apiKey = explicitKey || configProvider?.apiKey || "";
@@ -224,7 +224,11 @@ export async function loadActiveCodexSummaryEndpointDefaults(codexHome?: string)
   const providerId = readTopLevelTomlString(text, "model_provider");
   const model = readTopLevelTomlString(text, "model") || "";
   if (!providerId || providerId === OFFICIAL_CODEX_PROVIDER_ID) {
-    const credential = await resolveCodexCredential({ codexHome: home, configText: text });
+    const credential = await resolveCodexCredential({
+      codexHome: home,
+      configText: text,
+      executeCredentialHelper: false,
+    });
     return credential.apiKey
       ? { baseUrl: "", model, apiKey: credential.apiKey, apiFormat: "openai_responses" }
       : null;
@@ -234,7 +238,13 @@ export async function loadActiveCodexSummaryEndpointDefaults(codexHome?: string)
   const baseUrl = readTomlString(section, "base_url") || "";
   const wireApi = readTomlString(section, "wire_api") || "";
   const envKey = readTomlString(section, "env_key") || "";
-  const credential = await resolveCodexCredential({ codexHome: home, configText: text, providerId, envKey });
+  const credential = await resolveCodexCredential({
+    codexHome: home,
+    configText: text,
+    providerId,
+    envKey,
+    executeCredentialHelper: false,
+  });
   const apiKey = credential.apiKey;
   if (!baseUrl || !model || !apiKey) return null;
   return {
@@ -250,13 +260,23 @@ async function readActiveCodexProviderId(codexHome?: string): Promise<string> {
   return readTopLevelTomlString(text, "model_provider") || "";
 }
 
-async function readCodexConfigProviderSecret(providerId: string, codexHome?: string): Promise<{ baseUrl: string; apiKey: string; credentialSource: string | null } | null> {
+async function readCodexConfigProviderSecret(
+  providerId: string,
+  codexHome?: string,
+  executeCredentialHelper = false,
+): Promise<{ baseUrl: string; apiKey: string; credentialSource: string | null } | null> {
   const home = resolveProviderConfigDirectory(codexHome, ".codex");
   const text = await readOptionalFile(path.join(home, "config.toml"));
   const section = readTomlSection(text, modelProviderSection(providerId));
   const baseUrl = readTomlString(section, "base_url") || "";
   const envKey = readTomlString(section, "env_key") || "";
-  const credential = await resolveCodexCredential({ codexHome: home, configText: text, providerId, envKey });
+  const credential = await resolveCodexCredential({
+    codexHome: home,
+    configText: text,
+    providerId,
+    envKey,
+    executeCredentialHelper,
+  });
   return baseUrl || credential.apiKey ? { baseUrl, apiKey: credential.apiKey, credentialSource: credential.source } : null;
 }
 
@@ -272,7 +292,7 @@ async function resolveCodexCredential(options: {
   explicitSource?: string;
   /** Set to false when a caller must not borrow another provider's credential. */
   allowOtherProviders?: boolean;
-  /** Config snapshots detect helper-backed auth without executing provider-owned commands. */
+  /** Provider-owned commands run only when the caller explicitly opts in. */
   executeCredentialHelper?: boolean;
 }): Promise<ResolvedCodexCredential> {
   const explicitKey = options.explicitKey?.trim() ?? "";
@@ -281,7 +301,7 @@ async function resolveCodexCredential(options: {
   const commandAuth = options.providerId ? readCodexCommandAuth(options.configText, options.providerId) : null;
   if (commandAuth) {
     const source = `config.toml ${options.providerId}.auth.command`;
-    if (options.executeCredentialHelper === false) return { apiKey: "", source, configured: true };
+    if (options.executeCredentialHelper !== true) return { apiKey: "", source, configured: true };
     return {
       apiKey: await runProviderCredentialCommand(commandAuth),
       source,
