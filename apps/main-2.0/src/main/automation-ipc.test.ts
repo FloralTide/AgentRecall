@@ -80,6 +80,16 @@ function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefi
     requireReady: vi.fn(async () => undefined),
     health: vi.fn(() => ({ state: "ready" })),
     workflowSidebar: vi.fn(async () => ({ workflows: [{ workflowId: "workflow-1" }] })),
+    workflowWorkbench: vi.fn(async () => ({
+      workflows: [{
+        workflow: { workflowId: "workflow-1", title: "Workflow" },
+        nodeCount: 1,
+        status: "running",
+        updatedAt: 2,
+      }],
+      totalCount: 1,
+      activeCount: 1,
+    })),
     snapshot: vi.fn(() => ({ workDir: "/repo" })),
     subscribe: vi.fn(() => () => undefined),
     subscribeChanges: vi.fn(() => () => undefined),
@@ -232,6 +242,23 @@ describe("registerAutomationIpc", () => {
     });
 
     expect(service.workflowSidebar).toHaveBeenCalledOnce();
+    expect(service.requirePrepared).not.toHaveBeenCalled();
+    expect(service.requireReady).not.toHaveBeenCalled();
+  });
+
+  it("routes the lightweight Workflow workbench summary without a ready wrapper", async () => {
+    const { invoke, service } = setup();
+
+    await expect(invoke(AUTOMATION_CHANNELS.workflowWorkbench)).resolves.toMatchObject({
+      workflows: [{
+        workflow: { workflowId: "workflow-1", title: "Workflow" },
+        status: "running",
+      }],
+      totalCount: 1,
+      activeCount: 1,
+    });
+
+    expect(service.workflowWorkbench).toHaveBeenCalledOnce();
     expect(service.requirePrepared).not.toHaveBeenCalled();
     expect(service.requireReady).not.toHaveBeenCalled();
   });

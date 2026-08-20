@@ -5,11 +5,13 @@ import type {
   WorkflowNodeConversation,
   WorkflowSidebarItem,
   WorkflowStoreState,
+  WorkflowStatus,
 } from "../../automation/contracts";
 
 export const AUTOMATION_CHANNELS = {
   health: "automation:health",
   workflowSidebar: "automation:workflow:sidebar",
+  workflowWorkbench: "automation:workflow:workbench",
   snapshot: "automation:snapshot",
   snapshotChanged: "automation:snapshot-changed",
   change: "automation:change",
@@ -143,4 +145,20 @@ export interface AutomationHealth {
 export interface WorkflowSidebarSnapshot {
   activeWorkflowId?: string;
   workflows: WorkflowSidebarItem[];
+}
+
+export interface WorkflowWorkbenchItem {
+  workflow: {
+    workflowId: string;
+    title: string;
+  };
+  nodeCount: number;
+  status: WorkflowStatus;
+  updatedAt: number;
+}
+
+export interface WorkflowWorkbenchSnapshot {
+  workflows: WorkflowWorkbenchItem[];
+  totalCount: number;
+  activeCount: number;
 }

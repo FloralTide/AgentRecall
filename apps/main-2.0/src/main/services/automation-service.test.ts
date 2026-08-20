@@ -192,6 +192,25 @@ describe("NativeAutomationService", () => {
     expect(database.query).toHaveBeenCalledTimes(1);
   });
 
+  it("loads the Workflow workbench summary after preparation without starting execution infrastructure", async () => {
+    const { service, calls, hub, database, startBridge } = fixture();
+
+    await expect(service.workflowWorkbench()).resolves.toEqual({
+      workflows: [],
+      totalCount: 0,
+      activeCount: 0,
+    });
+
+    expect(calls).toEqual(["channels", "database", "mcp", "bundled"]);
+    expect(hub.initialize).not.toHaveBeenCalled();
+    expect(startBridge).not.toHaveBeenCalled();
+    expect(database.query).toHaveBeenCalledTimes(1);
+    const [sql, parameters] = vi.mocked(database.query).mock.calls[0]!;
+    expect(sql).toContain("LIMIT $1");
+    expect(sql).not.toContain("workflow_node_runs");
+    expect(parameters).toEqual([5]);
+  });
+
   it("prepares the persisted snapshot without starting execution infrastructure", async () => {
     const { service, calls, teamChats } = fixture();
 

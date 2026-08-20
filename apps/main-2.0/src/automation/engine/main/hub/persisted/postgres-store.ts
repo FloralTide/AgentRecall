@@ -2,11 +2,16 @@ import { asRecord, asString } from "./persisted-values";
 import type { PostgresDatabase, PostgresQueryable } from "../../../../../core/postgres/database";
 import type { PersistedAppStateV5 } from "./agent-hub-persistence";
 import type { WorkflowSidebarItem } from "../../../shared/types";
+import type {
+  WorkflowWorkbenchSnapshot,
+  WorkflowWorkbenchItem,
+} from "../../../../../shared/ipc/automation";
 import type { AgentHubPersistedStore } from "./persisted-store";
 import { PostgresChatRepository } from "./postgres-chat-repository";
 import { jsonParameter, postgresRecord, postgresTime } from "./postgres-values";
 
 const AUX_STATE_ID = 1;
+const WORKFLOW_WORKBENCH_LIMIT = 5;
 
 export class PostgresAppStore implements AgentHubPersistedStore {
   readonly label = "PostgreSQL";
@@ -83,6 +88,101 @@ export class PostgresAppStore implements AgentHubPersistedStore {
     return {
       ...(workflows[0] ? { activeWorkflowId: workflows[0].workflowId } : {}),
       workflows,
+    };
+  }
+
+  async loadWorkflowWorkbench(): Promise<WorkflowWorkbenchSnapshot> {
+    const result = await this.database.query<{
+      workflow_id: string;
+      workflow_title: string;
+      node_count: number;
+      workflow_updated_at: unknown;
+      run_status: string | null;
+      run_started_at: unknown;
+      run_finished_at: unknown;
+      total_count: number;
+      active_count: number;
+    }>(`
+      WITH workflow_overview AS (
+        SELECT
+          workflow.id AS workflow_id,
+          workflow.name AS workflow_title,
+          CASE
+            WHEN jsonb_typeof(workflow.definition -> 'nodes') = 'array'
+              THEN jsonb_array_length(workflow.definition -> 'nodes')
+            ELSE 0
+          END AS node_count,
+          workflow.updated_at AS workflow_updated_at,
+          selected_run.status AS run_status,
+          selected_run.started_at AS run_started_at,
+          selected_run.finished_at AS run_finished_at
+        FROM agent_recall.workflows AS workflow
+        LEFT JOIN LATERAL (
+          SELECT run.status, run.started_at, run.finished_at
+          FROM agent_recall.workflow_runs AS run
+          WHERE run.workflow_id = workflow.id
+          ORDER BY
+            CASE WHEN run.status IN ('running', 'waiting', 'paused') THEN 0 ELSE 1 END,
+            run.started_at DESC,
+            run.id
+          LIMIT 1
+        ) AS selected_run ON true
+      ),
+      counted AS (
+        SELECT
+          workflow_overview.*,
+          count(*) OVER ()::integer AS total_count,
+          count(*) FILTER (
+            WHERE run_status IN ('running', 'waiting', 'paused')
+          ) OVER ()::integer AS active_count
+        FROM workflow_overview
+      )
+      SELECT *
+      FROM counted
+      ORDER BY
+        CASE
+          WHEN run_status = 'waiting' THEN 0
+          WHEN run_status = 'running' THEN 1
+          WHEN run_status = 'failed' THEN 2
+          WHEN run_status IS NULL THEN 3
+          WHEN run_status IN ('paused', 'cancelled') THEN 4
+          WHEN run_status = 'completed' THEN 5
+          ELSE 3
+        END,
+        GREATEST(
+          workflow_updated_at,
+          COALESCE(run_finished_at, run_started_at, workflow_updated_at)
+        ) DESC,
+        workflow_id
+      LIMIT $1
+    `, [WORKFLOW_WORKBENCH_LIMIT]);
+    const workflows: WorkflowWorkbenchItem[] = result.rows.map((row) => {
+      const workflowUpdatedAt = postgresTime(row.workflow_updated_at);
+      const runUpdatedAt = postgresTime(row.run_finished_at ?? row.run_started_at);
+      const status: WorkflowWorkbenchItem["status"] =
+        row.run_status === "waiting"
+          ? "waiting_for_user"
+          : row.run_status === "paused" || row.run_status === "cancelled"
+            ? "stopped"
+            : row.run_status === "running"
+              || row.run_status === "failed"
+              || row.run_status === "completed"
+              ? row.run_status
+              : "draft";
+      return {
+        workflow: {
+          workflowId: row.workflow_id,
+          title: row.workflow_title,
+        },
+        nodeCount: Number(row.node_count),
+        status,
+        updatedAt: Math.max(workflowUpdatedAt, runUpdatedAt),
+      };
+    });
+    return {
+      workflows,
+      totalCount: Number(result.rows[0]?.total_count ?? 0),
+      activeCount: Number(result.rows[0]?.active_count ?? 0),
     };
   }
 
