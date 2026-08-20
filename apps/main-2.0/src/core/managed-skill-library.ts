@@ -241,47 +241,126 @@ export class ManagedSkillLibrary {
     }, true);
   }
 
-  updateTargets(managedId: string, targets: SkillInstallTarget[]): ManagedSkill {
+  updateTargets(
+    managedId: string,
+    targets: SkillInstallTarget[],
+    forceTargets: SkillInstallTarget[] = [],
+  ): ManagedSkill {
     const skill = this.requireManagedSkill(managedId);
     const requestedTargets = new Set(targets);
-    if ([...requestedTargets].some((target) => !INSTALL_TARGETS.includes(target))) {
+    const requestedForceTargets = new Set(forceTargets);
+    if (
+      [...requestedTargets].some((target) => !INSTALL_TARGETS.includes(target))
+      || [...requestedForceTargets].some((target) => !INSTALL_TARGETS.includes(target))
+    ) {
       throw new Error("Unknown Skill installation target.");
     }
-    const current = new Map(skill.installations.map((installation) => [installation.target, installation]));
-
-    // Preflight every requested target before removing any existing owned link.
-    for (const target of INSTALL_TARGETS) {
-      const installation = current.get(target)!;
-      if (!requestedTargets.has(target) && installation.state === "installed") {
-        const verified = this.inspectInstallation(managedId, target);
-        if (verified.state !== "installed") {
-          throw new Error(`Refusing to remove a ${target} Skill link that is no longer owned by AgentRecall.`);
-        }
+    if ([...requestedForceTargets].some((target) => !requestedTargets.has(target))) {
+      throw new Error("A forced Skill installation target must also be selected.");
+    }
+    const installations = INSTALL_TARGETS.map((target) => this.inspectInstallation(managedId, target));
+    const unforcedConflict = installations.find((installation) =>
+      requestedTargets.has(installation.target)
+      && installation.state === "conflict"
+      && !requestedForceTargets.has(installation.target));
+    if (unforcedConflict) {
+      throw new Error(
+        `The ${unforcedConflict.target} Skill target conflicts with an existing path and requires explicit force installation.`,
+      );
+    }
+    const stagedPaths: Array<{ originalPath: string; backupPath: string }> = [];
+    const pathsToStage = installations.filter((installation) =>
+      (!requestedTargets.has(installation.target) && installation.state === "installed")
+      || (
+        requestedTargets.has(installation.target)
+        && requestedForceTargets.has(installation.target)
+        && installation.state === "conflict"
+      ));
+    const linksToCreate = installations.filter((installation) =>
+      requestedTargets.has(installation.target)
+      && (
+        installation.state === "not-installed"
+        || (installation.state === "conflict" && requestedForceTargets.has(installation.target))
+      ));
+    for (const installation of [...pathsToStage, ...linksToCreate]) {
+      if (pathsOverlap(installation.path, skill.directoryPath)) {
+        throw new Error(`Refusing to update an overlapping managed Skill target at ${installation.path}.`);
       }
     }
 
-    for (const target of INSTALL_TARGETS) {
-      const installation = current.get(target)!;
-      const requested = requestedTargets.has(target);
-      if (!requested && installation.state === "installed") {
-        fs.unlinkSync(installation.path);
-      } else if (requested && installation.state === "not-installed") {
+    const createdLinks: ManagedSkillInstallation[] = [];
+    try {
+      for (const installation of pathsToStage) {
+        const removingOwnedLink = !requestedTargets.has(installation.target);
+        if (
+          removingOwnedLink
+          && this.inspectInstallation(managedId, installation.target).state !== "installed"
+        ) {
+          throw new Error(`Refusing to remove a ${installation.target} Skill link that is no longer owned by AgentRecall.`);
+        }
+        const backupPath = path.join(
+          path.dirname(installation.path),
+          `.${path.basename(installation.path)}.agent-recall-backup-${randomUUID()}`,
+        );
+        fs.renameSync(installation.path, backupPath);
+        stagedPaths.push({ originalPath: installation.path, backupPath });
+        if (removingOwnedLink && !symlinkPointsToDirectory(backupPath, skill.directoryPath)) {
+          throw new Error(`Refusing to remove a ${installation.target} Skill path that changed during the update.`);
+        }
+      }
+      for (const installation of linksToCreate) {
         fs.mkdirSync(path.dirname(installation.path), { recursive: true });
         fs.symlinkSync(skill.directoryPath, installation.path, managedSkillLinkType(this.platform));
-      } else if (requested && installation.state === "conflict") {
-        // User explicitly chose to overwrite a conflicting path. Replace the
-        // existing entry only when it is a symlink AgentRecall can safely
-        // remove; a real directory is left alone and stays reported as a
-        // conflict until the user clears it manually.
-        try {
-          if (fs.lstatSync(installation.path).isSymbolicLink()) {
-            fs.unlinkSync(installation.path);
-            fs.mkdirSync(path.dirname(installation.path), { recursive: true });
-            fs.symlinkSync(skill.directoryPath, installation.path, managedSkillLinkType(this.platform));
-          }
-        } catch {
-          // Path vanished between scan and write; treat as unreachable and skip.
+        createdLinks.push(installation);
+        if (this.inspectInstallation(managedId, installation.target).state !== "installed") {
+          throw new Error(`Managed Skill link verification failed for ${installation.target}.`);
         }
+      }
+    } catch (error) {
+      const rollbackErrors: unknown[] = [];
+      for (const installation of [...createdLinks].reverse()) {
+        try {
+          const state = this.inspectInstallation(managedId, installation.target).state;
+          if (state === "installed") {
+            fs.unlinkSync(installation.path);
+          } else if (state === "conflict") {
+            throw new Error(`Refusing to remove an unowned path while rolling back ${installation.target}.`);
+          }
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+      }
+      for (const staged of [...stagedPaths].reverse()) {
+        try {
+          if (lstatIfPresent(staged.originalPath)) {
+            throw new Error(`Refusing to overwrite a path that appeared while restoring ${staged.originalPath}.`);
+          }
+          fs.renameSync(staged.backupPath, staged.originalPath);
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+      }
+      if (rollbackErrors.length > 0) {
+        throw new AggregateError(
+          [error, ...rollbackErrors],
+          "Failed to update managed Skill targets and fully restore their previous state.",
+        );
+      }
+      throw error;
+    }
+
+    for (const staged of stagedPaths) {
+      try {
+        const stat = fs.lstatSync(staged.backupPath);
+        if (stat.isDirectory() && !stat.isSymbolicLink()) {
+          fs.rmSync(staged.backupPath, { recursive: true, force: false });
+        } else {
+          fs.unlinkSync(staged.backupPath);
+        }
+      } catch {
+        // The target update has committed. A cleanup failure must not roll
+        // back or report failure after the requested visible state was reached;
+        // leave the uniquely named hidden backup for later manual cleanup.
       }
     }
     return this.requireManagedSkill(managedId);
@@ -418,7 +497,8 @@ export class ManagedSkillLibrary {
     let stat: fs.Stats;
     try {
       stat = fs.lstatSync(targetPath);
-    } catch {
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
       return { target, path: targetPath, state: "not-installed" };
     }
     if (!stat.isSymbolicLink()) return { target, path: targetPath, state: "conflict" };
@@ -438,6 +518,38 @@ export class ManagedSkillLibrary {
 
 function managedSkillLinkType(platform: NodeJS.Platform): "dir" | "junction" {
   return platform === "win32" ? "junction" : "dir";
+}
+
+function isMissingPathError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+function lstatIfPresent(targetPath: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(targetPath);
+  } catch (error) {
+    if (isMissingPathError(error)) return null;
+    throw error;
+  }
+}
+
+function symlinkPointsToDirectory(linkPath: string, expectedDirectory: string): boolean {
+  try {
+    if (!fs.lstatSync(linkPath).isSymbolicLink()) return false;
+    return path.resolve(fs.realpathSync(linkPath)) === path.resolve(fs.realpathSync(expectedDirectory));
+  } catch {
+    return false;
+  }
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+  const normalizedLeft = path.resolve(left);
+  const normalizedRight = path.resolve(right);
+  const leftToRight = path.relative(normalizedLeft, normalizedRight);
+  const rightToLeft = path.relative(normalizedRight, normalizedLeft);
+  return leftToRight === ""
+    || (leftToRight !== ".." && !leftToRight.startsWith(`..${path.sep}`) && !path.isAbsolute(leftToRight))
+    || (rightToLeft !== ".." && !rightToLeft.startsWith(`..${path.sep}`) && !path.isAbsolute(rightToLeft));
 }
 
 function localSkillSourceLabel(source: SkillSource): string {

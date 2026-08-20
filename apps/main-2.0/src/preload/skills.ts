@@ -22,8 +22,12 @@ export function createSkillsApi(ipc: SkillsIpcRenderer) {
       : ipc.invoke(SKILLS_IPC.listImportCandidates.channel),
     importLocalSkills: (skillPaths: string[]): Promise<ManagedSkillImportResult[]> =>
       ipc.invoke(SKILLS_IPC.importLocal.channel, skillPaths),
-    updateManagedSkillTargets: (managedId: string, targets: SkillInstallTarget[]): Promise<ManagedSkill> =>
-      ipc.invoke(SKILLS_IPC.updateTargets.channel, managedId, targets),
+    updateManagedSkillTargets: (
+      managedId: string,
+      targets: SkillInstallTarget[],
+      forceTargets: SkillInstallTarget[] = [],
+    ): Promise<ManagedSkill> =>
+      ipc.invoke(SKILLS_IPC.updateTargets.channel, managedId, targets, forceTargets),
     listDiscoveredSkills: (input: { page: number; query: string }): Promise<SkillsShPage> =>
       ipc.invoke(SKILLS_IPC.listDiscovered.channel, input),
     aiSearchDiscoveredSkills: (input: { query: string; language: "en" | "zh" }): Promise<SkillAiSearchResult> =>

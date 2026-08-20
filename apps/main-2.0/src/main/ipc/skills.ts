@@ -15,7 +15,11 @@ export interface SkillsIpcService {
   listSkills(): Promise<InstalledSkillsSnapshot>;
   listImportCandidates(forceRefresh?: boolean): Promise<InstalledSkillsSnapshot>;
   importLocalSkills(skillPaths: string[]): Promise<ManagedSkillImportResult[]>;
-  updateManagedSkillTargets(managedId: string, targets: SkillInstallTarget[]): ManagedSkill;
+  updateManagedSkillTargets(
+    managedId: string,
+    targets: SkillInstallTarget[],
+    forceTargets?: SkillInstallTarget[],
+  ): ManagedSkill;
   listDiscoveredSkills(input: { page: number; query: string }): Promise<SkillsShPage>;
   aiSearchDiscoveredSkills(input: { query: string; language: "en" | "zh" }): Promise<SkillAiSearchResult>;
   getDiscoveredSkill(id: string): Promise<SkillsShDetail>;
@@ -56,7 +60,8 @@ export function registerSkillsIpc(ipc: IpcMainRegistrar, service: SkillsIpcServi
     registerIpcHandler(ipc, SKILLS_IPC.list, () => service.listSkills()),
     registerIpcHandler(ipc, SKILLS_IPC.listImportCandidates, (_event, forceRefresh) => service.listImportCandidates(forceRefresh)),
     registerIpcHandler(ipc, SKILLS_IPC.importLocal, (_event, paths) => service.importLocalSkills(paths)),
-    registerIpcHandler(ipc, SKILLS_IPC.updateTargets, (_event, id, targets) => service.updateManagedSkillTargets(id, targets)),
+    registerIpcHandler(ipc, SKILLS_IPC.updateTargets, (_event, id, targets, forceTargets) =>
+      service.updateManagedSkillTargets(id, targets, forceTargets)),
     registerIpcHandler(ipc, SKILLS_IPC.listDiscovered, (_event, input) => service.listDiscoveredSkills(input)),
     registerIpcHandler(ipc, SKILLS_IPC.aiSearchDiscovered, (_event, input) => service.aiSearchDiscoveredSkills(input)),
     registerIpcHandler(ipc, SKILLS_IPC.getDiscovered, (_event, id) => service.getDiscoveredSkill(id)),
