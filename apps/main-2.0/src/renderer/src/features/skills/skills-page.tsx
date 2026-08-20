@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import { Compass, RefreshCw, Upload, X } from "lucide-react";
 import type { InstalledSkill, InstalledSkillsSnapshot, SkillRootStatus, SkillSource } from "../../../../core/skill-manager";
@@ -24,9 +24,15 @@ export function SkillsPage({
   syncSnapshot,
   loading,
   feedback,
+  localSnapshot,
+  localLoading,
+  localError,
   language,
   revealLabel,
   onRefresh,
+  onEnsureLocalLoaded,
+  onRefreshLoadedLocal,
+  onRefreshLocal,
   onUpload,
   onUploadSelected,
   onInstallRemote,
@@ -44,9 +50,15 @@ export function SkillsPage({
   syncSnapshot: SkillSyncSnapshot;
   loading: boolean;
   feedback: SkillsFeedback;
+  localSnapshot: InstalledSkillsSnapshot | null;
+  localLoading: boolean;
+  localError: string | null;
   language: LanguageMode;
   revealLabel: string;
   onRefresh: () => void;
+  onEnsureLocalLoaded: () => void;
+  onRefreshLoadedLocal: () => void;
+  onRefreshLocal: () => void;
   onUpload: (skill: InstalledSkill, force?: boolean) => Promise<SkillSyncUploadOutcome | null>;
   onUploadSelected: (skills: InstalledSkill[]) => Promise<{ remainingSkillIds: string[] }>;
   onInstallRemote: (remoteSkillId: string) => Promise<void>;
@@ -72,8 +84,6 @@ export function SkillsPage({
   const [originFilter, setOriginFilter] = useState<ManagedSkillOriginFilter>("all");
   const [sort, setSort] = useState<ManagedSkillSort>("usage");
   const [activeTab, setActiveTab] = useState<"app" | "local">("app");
-  const [localSkillCount, setLocalSkillCount] = useState(0);
-  const [localRefreshVersion, setLocalRefreshVersion] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedRemoteFingerprint, setSelectedRemoteFingerprint] = useState<string | null>(null);
   const [checkedIds, setCheckedIds] = useState<Set<string>>(() => new Set());
@@ -104,6 +114,13 @@ export function SkillsPage({
       : [])),
     [managedSkills],
   );
+  const refreshedLocalOnMountRef = useRef(false);
+
+  useEffect(() => {
+    if (refreshedLocalOnMountRef.current) return;
+    refreshedLocalOnMountRef.current = true;
+    onRefreshLoadedLocal();
+  }, [onRefreshLoadedLocal]);
 
   useEffect(() => {
     if (selectedRemoteFingerprint) {
@@ -172,7 +189,7 @@ export function SkillsPage({
   };
 
   const refreshActiveTab = () => {
-    if (activeTab === "local") setLocalRefreshVersion((version) => version + 1);
+    if (activeTab === "local") onRefreshLocal();
     else onRefresh();
   };
 
@@ -221,7 +238,7 @@ export function SkillsPage({
               aria-controls="local-skills-panel"
               onClick={() => setActiveTab("local")}
             >
-              <span>{l("Local Skills", "本地 Skill")}</span><small>{formatCompactNumber(localSkillCount)}</small>
+              <span>{l("Local Skills", "本地 Skill")}</span><small>{formatCompactNumber(localSnapshot?.skills.length ?? 0)}</small>
             </button>
           </nav>
           <div className="managed-skills-toolbar-actions">
@@ -230,7 +247,7 @@ export function SkillsPage({
               type="button"
               className="icon-button"
               onClick={refreshActiveTab}
-              disabled={activeTab === "app" && loading}
+              disabled={activeTab === "app" ? loading : localLoading}
               aria-label={activeTab === "app" ? l("Refresh app Skills", "刷新本 App Skill") : l("Refresh local Skills", "刷新本地 Skill")}
               title={activeTab === "app" ? l("Refresh app Skills", "刷新本 App Skill") : l("Refresh local Skills", "刷新本地 Skill")}
             ><RefreshCw size={14} /></button>
@@ -322,11 +339,14 @@ export function SkillsPage({
 
         <LocalSkillsTab
           active={activeTab === "local"}
+          snapshot={localSnapshot}
+          loading={localLoading}
+          error={localError}
           managedSourcePaths={managedSourcePaths}
-          refreshVersion={localRefreshVersion}
           language={language}
           revealLabel={revealLabel}
-          onCountChange={setLocalSkillCount}
+          onEnsureLoaded={onEnsureLocalLoaded}
+          onRefresh={onRefreshLocal}
           onImported={libraryChanged}
           onCopyPath={onCopyPath}
           onReveal={onReveal}

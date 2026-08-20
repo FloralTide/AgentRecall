@@ -1941,9 +1941,15 @@ export function App(): ReactElement {
                 syncSnapshot={skills.syncSnapshot}
                 loading={skills.loading}
                 feedback={skills.feedback}
+                localSnapshot={skills.localSnapshot}
+                localLoading={skills.localLoading}
+                localError={skills.localError}
                 language={language}
                 revealLabel={FILE_MANAGER_LABEL}
                 onRefresh={() => void skills.load({ refreshUsage: true })}
+                onEnsureLocalLoaded={skills.ensureLocalLoaded}
+                onRefreshLoadedLocal={skills.refreshLoadedLocal}
+                onRefreshLocal={() => void skills.refreshLocal()}
                 onUpload={(skill, force) => skills.upload(skill, force)}
                 onUploadSelected={(selectedSkills) => skills.uploadSelected(selectedSkills)}
                 onInstallRemote={(remoteSkillId) => skills.installRemote(remoteSkillId)}

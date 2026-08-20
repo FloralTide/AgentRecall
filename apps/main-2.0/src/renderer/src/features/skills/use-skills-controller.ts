@@ -32,8 +32,14 @@ export function useSkillsController(language: LanguageMode): {
   syncSnapshot: SkillSyncSnapshot;
   loading: boolean;
   feedback: SkillsFeedback;
+  localSnapshot: InstalledSkillsSnapshot | null;
+  localLoading: boolean;
+  localError: string | null;
   load(options?: { refreshUsage?: boolean; silent?: boolean }): Promise<void>;
   ensureLoaded(): void;
+  ensureLocalLoaded(): void;
+  refreshLoadedLocal(): void;
+  refreshLocal(): Promise<void>;
   deleteSkill(skill: InstalledSkill): Promise<void>;
   upload(skill: InstalledSkill, force?: boolean): Promise<SkillSyncUploadOutcome | null>;
   uploadSelected(skills: InstalledSkill[]): Promise<{ remainingSkillIds: string[] }>;
@@ -45,9 +51,15 @@ export function useSkillsController(language: LanguageMode): {
   const [syncSnapshot, setSyncSnapshot] = useState<SkillSyncSnapshot>(EMPTY_SKILL_SYNC);
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<SkillsFeedback>(null);
+  const [localSnapshot, setLocalSnapshot] = useState<InstalledSkillsSnapshot | null>(null);
+  const [localLoading, setLocalLoading] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
   const syncSnapshotRef = useRef<SkillSyncSnapshot>(EMPTY_SKILL_SYNC);
   const loadedRef = useRef(false);
   const loadSequenceRef = useRef(0);
+  const localSnapshotRef = useRef<InstalledSkillsSnapshot | null>(null);
+  const localLoadPromiseRef = useRef<Promise<void> | null>(null);
+  const localLoadErrorVisibleRef = useRef(true);
   const t = useCallback(
     (en: string, zh: string) => localize(language, en, zh),
     [language],
@@ -136,6 +148,55 @@ export function useSkillsController(language: LanguageMode): {
   const ensureLoaded = useCallback((): void => {
     if (!loadedRef.current) void load({ silent: true });
   }, [load]);
+
+  const loadLocal = useCallback((options: {
+    forceRefresh: boolean;
+    reloadCachedSnapshot?: boolean;
+  }): Promise<void> => {
+    if (!options.forceRefresh && localSnapshotRef.current && !options.reloadCachedSnapshot) {
+      return Promise.resolve();
+    }
+    if (localLoadPromiseRef.current) return localLoadPromiseRef.current;
+
+    setLocalLoading(true);
+    setLocalError(null);
+    localLoadErrorVisibleRef.current = true;
+    const request = window.sessionSearch.listSkillImportCandidates(options.forceRefresh)
+      .then((nextSnapshot) => {
+        localSnapshotRef.current = nextSnapshot;
+        setLocalSnapshot(nextSnapshot);
+      })
+      .catch((error) => {
+        if (!localLoadErrorVisibleRef.current) return;
+        setLocalError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (localLoadPromiseRef.current !== request) return;
+        localLoadPromiseRef.current = null;
+        setLocalLoading(false);
+      });
+    localLoadPromiseRef.current = request;
+    return request;
+  }, []);
+
+  const ensureLocalLoaded = useCallback((): void => {
+    void loadLocal({ forceRefresh: false });
+  }, [loadLocal]);
+
+  const refreshLoadedLocal = useCallback((): void => {
+    if (!localSnapshotRef.current) return;
+    setLocalError(null);
+    if (localLoadPromiseRef.current) {
+      localLoadErrorVisibleRef.current = false;
+      return;
+    }
+    void loadLocal({ forceRefresh: false, reloadCachedSnapshot: true });
+  }, [loadLocal]);
+
+  const refreshLocal = useCallback(
+    (): Promise<void> => loadLocal({ forceRefresh: true }),
+    [loadLocal],
+  );
 
   const deleteSkill = useCallback(async (skill: InstalledSkill): Promise<void> => {
     setLoading(true);
@@ -364,8 +425,14 @@ export function useSkillsController(language: LanguageMode): {
     syncSnapshot,
     loading,
     feedback,
+    localSnapshot,
+    localLoading,
+    localError,
     load,
     ensureLoaded,
+    ensureLocalLoaded,
+    refreshLoadedLocal,
+    refreshLocal,
     deleteSkill,
     upload,
     uploadSelected,

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactElement, UIEvent } from "react";
 import { CheckCircle2, Copy, FolderInput, FolderOpen, Search } from "lucide-react";
-import type { InstalledSkill } from "../../../../core/skill-manager";
+import type { InstalledSkill, InstalledSkillsSnapshot } from "../../../../core/skill-manager";
 import { localize, type LanguageMode } from "../../language";
 import { Markdown } from "../../markdown";
 import { markdownPreview } from "../../markdown-preview";
@@ -15,78 +15,57 @@ import {
 
 const LOCAL_SKILL_RENDER_BATCH = 60;
 const LOCAL_SKILL_RENDER_THRESHOLD_PX = 160;
+const EMPTY_LOCAL_SKILLS: InstalledSkill[] = [];
 
 export function LocalSkillsTab({
   active,
+  snapshot,
+  loading,
+  error,
   managedSourcePaths,
-  refreshVersion,
   language,
   revealLabel,
-  onCountChange,
+  onEnsureLoaded,
+  onRefresh,
   onImported,
   onCopyPath,
   onReveal,
 }: {
   active: boolean;
+  snapshot: InstalledSkillsSnapshot | null;
+  loading: boolean;
+  error: string | null;
   managedSourcePaths: Set<string>;
-  refreshVersion: number;
   language: LanguageMode;
   revealLabel: string;
-  onCountChange: (count: number) => void;
+  onEnsureLoaded: () => void;
+  onRefresh: () => void;
   onImported: (managedId: string) => void;
   onCopyPath: (skillPath: string) => void;
   onReveal: (directoryPath: string) => void;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
-  const [skills, setSkills] = useState<InstalledSkill[]>([]);
+  const skills = snapshot?.skills ?? EMPTY_LOCAL_SKILLS;
   const [query, setQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState<SkillSourceFilter>("all");
   const [sort, setSort] = useState<SkillSortKey>("usage");
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
   const [importingPath, setImportingPath] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [reloadVersion, setReloadVersion] = useState(0);
+  const [importError, setImportError] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(LOCAL_SKILL_RENDER_BATCH);
-  const mounted = useRef(true);
-  const requestedRequestKey = useRef<string | null>(null);
-  const loadedRequestKey = useRef<string | null>(null);
-
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
+  const displayedError = importError ?? error;
 
   useEffect(() => {
     if (!active) return;
-    const requestKey = `${refreshVersion}:${reloadVersion}`;
-    if (loadedRequestKey.current === requestKey || requestedRequestKey.current === requestKey) return;
-    requestedRequestKey.current = requestKey;
-    setLoading(true);
-    setError(null);
-    window.sessionSearch.listSkillImportCandidates(refreshVersion > 0 || reloadVersion > 0)
-      .then((snapshot) => {
-        if (!mounted.current || requestedRequestKey.current !== requestKey) return;
-        loadedRequestKey.current = requestKey;
-        setSkills(snapshot.skills);
-        setVisibleCount(LOCAL_SKILL_RENDER_BATCH);
-        onCountChange(snapshot.skills.length);
-        setSelectedPath((current) => current && snapshot.skills.some((skill) => skill.path === current)
-          ? current
-          : null);
-      })
-      .catch((reason) => {
-        if (!mounted.current || requestedRequestKey.current !== requestKey) return;
-        requestedRequestKey.current = null;
-        setError(reason instanceof Error ? reason.message : String(reason));
-      })
-      .finally(() => {
-        if (!mounted.current) return;
-        if (loadedRequestKey.current === requestKey || requestedRequestKey.current === null) setLoading(false);
-      });
-  }, [active, onCountChange, refreshVersion, reloadVersion]);
+    onEnsureLoaded();
+  }, [active, onEnsureLoaded]);
+
+  useEffect(() => {
+    setVisibleCount(LOCAL_SKILL_RENDER_BATCH);
+    setSelectedPath((current) => current && skills.some((skill) => skill.path === current)
+      ? current
+      : null);
+  }, [skills]);
 
   const filteredSkills = useMemo(
     () => sortInstalledSkills(filterInstalledSkills(skills, query, sourceFilter), sort),
@@ -110,14 +89,14 @@ export function LocalSkillsTab({
   const addToApp = async (skill: InstalledSkill) => {
     if (managedSourcePaths.has(skill.directoryPath) || importingPath) return;
     setImportingPath(skill.path);
-    setError(null);
+    setImportError(null);
     try {
       const result = await window.sessionSearch.importLocalSkills([skill.path]);
       const managedId = result[0]?.managedId;
       if (!managedId) throw new Error(l("The Skill was not added to this app.", "Skill 未能加入本 App。"));
       onImported(managedId);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setImportError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setImportingPath(null);
     }
@@ -131,10 +110,13 @@ export function LocalSkillsTab({
       aria-labelledby="local-skills-tab"
       hidden={!active}
     >
-      {error ? (
+      {displayedError ? (
         <div className="managed-skills-feedback error">
-          <span>{error}</span>
-          <button type="button" onClick={() => setReloadVersion((value) => value + 1)}>{l("Retry", "重试")}</button>
+          <span>{displayedError}</span>
+          <button type="button" onClick={() => {
+            setImportError(null);
+            onRefresh();
+          }}>{l("Retry", "重试")}</button>
         </div>
       ) : null}
       <div className="managed-skills-grid local-skills-grid">
