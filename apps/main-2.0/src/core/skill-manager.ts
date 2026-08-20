@@ -70,6 +70,7 @@ export interface SkillProjectSource {
 export interface DeleteInstalledSkillResult {
   deletedPath: string;
   skillName: string;
+  retainedBackupPaths: string[];
 }
 
 export interface InstallRemoteSkillOptions {
@@ -231,7 +232,7 @@ export function deleteInstalledSkill(skillPath: string, options: SkillManagerOpt
   }
 
   fs.rmSync(directoryPath, { recursive: true, force: false });
-  return { deletedPath: directoryPath, skillName: skill.name };
+  return { deletedPath: directoryPath, skillName: skill.name, retainedBackupPaths: [] };
 }
 
 export function installRemoteSkillLocally(remoteSkill: RemoteSkill, options: InstallRemoteSkillOptions = {}): InstallRemoteSkillResult {

@@ -9,7 +9,7 @@ export type RefreshFeedback = ActionStatus | null;
 export type StatsFeedback = ActionStatus | null;
 export type QuotaFeedback = ActionStatus | null;
 export type SettingsFeedback = ActionStatus | null;
-export type SkillsFeedback = ActionStatus | null;
+export type SkillsFeedback = ActionStatus | { kind: "warning"; message: string } | null;
 
 export interface ContextMenuState {
   x: number;

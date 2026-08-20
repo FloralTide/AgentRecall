@@ -79,6 +79,16 @@ function replaceRmSync(replacement: typeof fs.rmSync): () => void {
   };
 }
 
+function replaceUnlinkSync(replacement: typeof fs.unlinkSync): () => void {
+  const original = mutableFs.unlinkSync;
+  mutableFs.unlinkSync = replacement;
+  syncBuiltinESMExports();
+  return () => {
+    mutableFs.unlinkSync = original;
+    syncBuiltinESMExports();
+  };
+}
+
 function replaceRenameSync(replacement: typeof fs.renameSync): () => void {
   const original = mutableFs.renameSync;
   mutableFs.renameSync = replacement;
@@ -298,6 +308,7 @@ describe("ManagedSkillLibrary conflicting installation targets", () => {
     const deleted = fixture.library.delete(fixture.managedId);
 
     expect(deleted.skillName).toBe(fixture.managedId);
+    expect(deleted.retainedBackupPaths).toEqual([]);
     expect(fs.existsSync(sharedTargetPath)).toBe(false);
     expect(fs.existsSync(fixture.managedSkillPath)).toBe(false);
     expect(fixture.library.list().skills).toEqual([]);
@@ -386,6 +397,133 @@ describe("ManagedSkillLibrary conflicting installation targets", () => {
     expect(fs.realpathSync(targetPath)).toBe(fs.realpathSync(fixture.managedSkillPath));
     expect(fs.readFileSync(path.join(fixture.managedSkillPath, "SKILL.md"), "utf8"))
       .toBe("# Fixture Skill\n");
+  });
+
+  it("does not restore installed targets when the managed source cannot be restored", () => {
+    const fixture = createManagedSkillFixture();
+    const targetPath = path.join(fixture.homeDir, ".codex", "skills", fixture.managedId);
+    const metadataPath = path.join(
+      path.dirname(fixture.managedSkillPath),
+      ".metadata",
+      `${fixture.managedId}.json`,
+    );
+    fixture.library.updateTargets(fixture.managedId, ["codex"]);
+    const originalRenameSync = mutableFs.renameSync;
+    const restoreRenameSync = replaceRenameSync((oldPath, newPath) => {
+      if (path.resolve(String(oldPath)) === path.resolve(metadataPath)) {
+        mutableFs.mkdirSync(fixture.managedSkillPath);
+        mutableFs.writeFileSync(
+          path.join(fixture.managedSkillPath, "external.txt"),
+          "concurrent replacement",
+        );
+        throw new Error("simulated metadata stage failure");
+      }
+      originalRenameSync(oldPath, newPath);
+    });
+
+    try {
+      expect(() => fixture.library.delete(fixture.managedId))
+        .toThrow("fully restore its previous state");
+    } finally {
+      restoreRenameSync();
+    }
+
+    expect(fs.readFileSync(path.join(fixture.managedSkillPath, "external.txt"), "utf8"))
+      .toBe("concurrent replacement");
+    expect(fs.existsSync(targetPath)).toBe(false);
+    const linkBackupPath = path.join(
+      path.dirname(targetPath),
+      fs.readdirSync(path.dirname(targetPath)).find((entry) =>
+        entry.includes(".agent-recall-backup-"))!,
+    );
+    expect(fs.lstatSync(linkBackupPath).isSymbolicLink()).toBe(true);
+    const sourceBackupPath = path.join(
+      fixture.fixtureRoot,
+      fs.readdirSync(fixture.fixtureRoot).find((entry) =>
+        entry.startsWith(".library.agent-recall-delete-")
+        && !entry.endsWith(".metadata"))!,
+    );
+    expect(fs.readFileSync(path.join(sourceBackupPath, "SKILL.md"), "utf8"))
+      .toBe("# Fixture Skill\n");
+  });
+
+  it("reports a retained managed source when deletion cleanup fails", () => {
+    const fixture = createManagedSkillFixture();
+    const targetPath = path.join(fixture.homeDir, ".codex", "skills", fixture.managedId);
+    fixture.library.updateTargets(fixture.managedId, ["codex"]);
+    const originalRmSync = mutableFs.rmSync;
+    const restoreRmSync = replaceRmSync((rmPath, options) => {
+      if (String(rmPath).includes(".agent-recall-delete-")) {
+        throw new Error("simulated deletion cleanup failure");
+      }
+      originalRmSync(rmPath, options);
+    });
+
+    let deleted;
+    try {
+      deleted = fixture.library.delete(fixture.managedId);
+    } finally {
+      restoreRmSync();
+    }
+
+    expect(deleted.skillName).toBe(fixture.managedId);
+    expect(deleted.retainedBackupPaths).toHaveLength(1);
+    expect(deleted.retainedBackupPaths[0]).toContain(".agent-recall-delete-");
+    expect(fs.readFileSync(path.join(deleted.retainedBackupPaths[0], "SKILL.md"), "utf8"))
+      .toBe("# Fixture Skill\n");
+    expect(fs.existsSync(fixture.managedSkillPath)).toBe(false);
+    expect(fs.existsSync(targetPath)).toBe(false);
+    expect(fixture.library.list().skills).toEqual([]);
+  });
+
+  it("reports an installed-link backup when deletion cleanup fails", () => {
+    const fixture = createManagedSkillFixture();
+    const targetPath = path.join(fixture.homeDir, ".codex", "skills", fixture.managedId);
+    fixture.library.updateTargets(fixture.managedId, ["codex"]);
+    const originalUnlinkSync = mutableFs.unlinkSync;
+    const restoreUnlinkSync = replaceUnlinkSync((unlinkPath) => {
+      if (String(unlinkPath).includes(".agent-recall-backup-")) {
+        throw new Error("simulated link cleanup failure");
+      }
+      originalUnlinkSync(unlinkPath);
+    });
+
+    let deleted;
+    try {
+      deleted = fixture.library.delete(fixture.managedId);
+    } finally {
+      restoreUnlinkSync();
+    }
+
+    expect(deleted.retainedBackupPaths).toHaveLength(1);
+    expect(deleted.retainedBackupPaths[0]).toContain(".agent-recall-backup-");
+    expect(fs.lstatSync(deleted.retainedBackupPaths[0]).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(fixture.managedSkillPath)).toBe(false);
+    expect(fs.existsSync(targetPath)).toBe(false);
+  });
+
+  it("does not report a backup removed before cleanup throws", () => {
+    const fixture = createManagedSkillFixture();
+    const targetPath = path.join(fixture.homeDir, ".codex", "skills", fixture.managedId);
+    fixture.library.updateTargets(fixture.managedId, ["codex"]);
+    const originalUnlinkSync = mutableFs.unlinkSync;
+    const restoreUnlinkSync = replaceUnlinkSync((unlinkPath) => {
+      originalUnlinkSync(unlinkPath);
+      if (String(unlinkPath).includes(".agent-recall-backup-")) {
+        throw new Error("simulated late link cleanup failure");
+      }
+    });
+
+    let deleted;
+    try {
+      deleted = fixture.library.delete(fixture.managedId);
+    } finally {
+      restoreUnlinkSync();
+    }
+
+    expect(deleted.retainedBackupPaths).toEqual([]);
+    expect(fs.existsSync(fixture.managedSkillPath)).toBe(false);
+    expect(fs.existsSync(targetPath)).toBe(false);
   });
 
   it("refuses to delete a managed Skill when an installed target cannot be inspected", () => {

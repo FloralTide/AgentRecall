@@ -584,12 +584,12 @@ export class ManagedSkillLibrary {
       }
     } catch (error) {
       const rollbackErrors: unknown[] = [];
-      const restore = (stage: DeleteStage | null): void => {
-        if (!stage) return;
+      const restore = (stage: DeleteStage | null): boolean => {
+        if (!stage) return true;
         try {
           const backupStat = lstatIfPresent(stage.backupPath);
           if (!backupStat) {
-            if (!stage.movedStat && lstatIfPresent(stage.originalPath)) return;
+            if (!stage.movedStat && lstatIfPresent(stage.originalPath)) return true;
             throw new Error(`Cannot restore missing Skill deletion backup ${stage.backupPath}.`);
           }
           if (stage.movedStat && !sameFileIdentity(backupStat, stage.movedStat)) {
@@ -605,13 +605,36 @@ export class ManagedSkillLibrary {
           ) {
             throw new Error(`Skill deletion rollback verification failed for ${stage.originalPath}.`);
           }
+          return true;
         } catch (rollbackError) {
           rollbackErrors.push(rollbackError);
+          return false;
         }
       };
-      restore(stagedSource);
+      const sourceRestored = restore(stagedSource) && (() => {
+        try {
+          const restoredSourceStat = fs.lstatSync(skill.directoryPath);
+          if (
+            !sameFileIdentity(restoredSourceStat, managedSkillStat)
+            || !restoredSourceStat.isDirectory()
+            || restoredSourceStat.isSymbolicLink()
+          ) {
+            throw new Error(`Managed Skill source rollback verification failed for ${skill.directoryPath}.`);
+          }
+          return true;
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+          return false;
+        }
+      })();
       restore(stagedMetadata);
-      for (const staged of [...stagedLinks].reverse()) restore(staged);
+      if (sourceRestored) {
+        for (const staged of [...stagedLinks].reverse()) restore(staged);
+      } else if (stagedLinks.length > 0) {
+        rollbackErrors.push(new Error(
+          "Skipped restoring installed Skill links because the managed Skill source was not safely restored.",
+        ));
+      }
       if (rollbackErrors.length > 0) {
         throw new AggregateError(
           [error, ...rollbackErrors],
@@ -621,11 +644,16 @@ export class ManagedSkillLibrary {
       throw error;
     }
 
+    const retainedBackupPaths: string[] = [];
     const cleanup = (stage: DeleteStage | null, recursive = false): void => {
       if (!stage?.movedStat) return;
       try {
         const backupStat = lstatIfPresent(stage.backupPath);
-        if (!backupStat || !sameFileIdentity(backupStat, stage.movedStat)) return;
+        if (!backupStat) return;
+        if (!sameFileIdentity(backupStat, stage.movedStat)) {
+          retainedBackupPaths.push(stage.backupPath);
+          return;
+        }
         if (recursive) {
           fs.rmSync(stage.backupPath, { recursive: true, force: false });
         } else {
@@ -634,12 +662,22 @@ export class ManagedSkillLibrary {
       } catch {
         // Deletion has committed. Hidden backups are deliberately retained
         // when cleanup cannot complete so the deleted state stays consistent.
+        // Report any path that may remain so the renderer can tell the user.
+        try {
+          if (lstatIfPresent(stage.backupPath)) retainedBackupPaths.push(stage.backupPath);
+        } catch {
+          retainedBackupPaths.push(stage.backupPath);
+        }
       }
     };
     for (const staged of stagedLinks) cleanup(staged);
     cleanup(stagedMetadata);
     cleanup(stagedSource, true);
-    return { deletedPath: skill.directoryPath, skillName: skill.name };
+    return {
+      deletedPath: skill.directoryPath,
+      skillName: skill.name,
+      retainedBackupPaths,
+    };
   }
 
   private importDirectory(managedId: string, sourceDirectory: string, origin: ManagedSkillOrigin): ManagedSkillImportResult {

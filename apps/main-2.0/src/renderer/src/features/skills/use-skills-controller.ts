@@ -151,12 +151,22 @@ export function useSkillsController(language: LanguageMode): {
       ]);
       setSnapshot(nextSnapshot);
       setSyncSnapshot(nextSyncSnapshot);
-      const message = t(`Deleted ${result.skillName}.`, `已删除 ${result.skillName}。`);
-      setFeedback({ kind: "success", message });
-      window.setTimeout(() => {
-        setFeedback((current) =>
-          current?.kind === "success" && current.message === message ? null : current);
-      }, 2200);
+      if (result.retainedBackupPaths.length > 0) {
+        setFeedback({
+          kind: "warning",
+          message: t(
+            `Deleted ${result.skillName}, but a staged backup could not be removed. Backup: ${result.retainedBackupPaths.join(", ")}`,
+            `已删除 ${result.skillName}，但暂存备份未能删除。备份位置：${result.retainedBackupPaths.join("、")}`,
+          ),
+        });
+      } else {
+        const message = t(`Deleted ${result.skillName}.`, `已删除 ${result.skillName}。`);
+        setFeedback({ kind: "success", message });
+        window.setTimeout(() => {
+          setFeedback((current) =>
+            current?.kind === "success" && current.message === message ? null : current);
+        }, 2200);
+      }
     } catch (error) {
       setFeedback({
         kind: "error",
