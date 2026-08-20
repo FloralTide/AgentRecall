@@ -1,5 +1,6 @@
 import {
   API_PROVIDER_PRESETS,
+  CLAUDE_API_PROVIDER_PRESETS,
   mergeApiConfigWithProfileDefaults,
   mergeClaudeApiConfigWithProfileDefaults,
   normalizeApiConfig,
@@ -31,11 +32,13 @@ import {
 import type { AppSettings, AppSettingsUpdate } from "../../core/platform";
 import { providerConfigDirectoryExists } from "../../core/provider-config-path";
 import { requestSummaryCompletion } from "../../core/session-summarizer";
-import { buildCodexExecEndpoint } from "../../core/summary-endpoint";
+import { buildClaudeExecEndpoint, buildCodexExecEndpoint } from "../../core/summary-endpoint";
 import type {
   ClaudeModelProbeRequest,
   CodexModelProbeRequest,
   ConfigSnapshotRequest,
+  ProviderConnectionRequest,
+  ProviderConnectionResult,
   ProviderKeyTarget,
   SummaryProviderConnectionRequest,
   SummaryProviderConnectionResult,
@@ -313,6 +316,187 @@ export class ProviderService {
           ? `AgentRecall ${keyTarget} key store`
           : undefined,
     });
+  }
+
+  async testProviderConnection(input: ProviderConnectionRequest): Promise<ProviderConnectionResult> {
+    const startedAt = Date.now();
+    const settings = this.dependencies.getSettings();
+    const prompt = [{ role: "user" as const, content: "Reply with exactly OK." }];
+
+    if (input.target === "claude") {
+      const normalized = normalizeClaudeApiConfig(input.apiConfig);
+      const preset = CLAUDE_API_PROVIDER_PRESETS.find((item) => item.id === normalized.customProviderId);
+      const apiConfig = normalizeClaudeApiConfig({
+        ...normalized,
+        customProviderName: input.apiConfig.customProviderName?.trim() || preset?.providerName || normalized.customProviderId,
+        customBaseUrl: input.apiConfig.customBaseUrl?.trim() || preset?.baseUrl || "",
+        customModel: input.apiConfig.customModel?.trim() || preset?.model || "",
+        customApiFormat: input.apiConfig.customApiFormat ?? preset?.apiFormat ?? "anthropic",
+        customApiKeyField: input.apiConfig.customApiKeyField ?? preset?.apiKeyField ?? "ANTHROPIC_AUTH_TOKEN",
+      });
+      const endpoint = buildClaudeExecEndpoint({
+        ...settings,
+        summaryClaudeModel: apiConfig.activeProvider === "custom" ? apiConfig.customModel : "",
+        summaryClaudeConfigDir: apiConfig.customConfigDir,
+      });
+      let credentialSource = "Claude Code CLI authentication";
+      if (apiConfig.activeProvider === "official") {
+        const officialEnv = {
+          ANTHROPIC_BASE_URL: "",
+          ANTHROPIC_AUTH_TOKEN: "",
+          ANTHROPIC_API_KEY: "",
+          ANTHROPIC_MODEL: "",
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "",
+          ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "",
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "",
+          ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "",
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "",
+          ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: "",
+        };
+        endpoint.env = { ...endpoint.env, ...officialEnv };
+        endpoint.cliArgs = ["--settings", JSON.stringify({ env: officialEnv })];
+      } else {
+        if (!apiConfig.customBaseUrl.trim()) {
+          throw new Error(`Base URL is required to test ${apiConfig.customProviderName}.`);
+        }
+        const typedKey = apiConfig.customApiKey.trim();
+        const storedKey = typedKey
+          ? ""
+          : this.dependencies.keys.get("claude", apiConfig.customProviderId);
+        const credential = await this.operations.resolveClaudeProviderCredential({
+          claudeHome: apiConfig.customConfigDir || undefined,
+          apiKeyField: apiConfig.customApiKeyField,
+          apiKey: typedKey || storedKey,
+          apiKeySource: typedKey
+            ? "API key field"
+            : storedKey
+              ? "AgentRecall claude key store"
+              : undefined,
+        });
+        if (credential.apiKey) {
+          endpoint.env = {
+            ...endpoint.env,
+            ANTHROPIC_BASE_URL: apiConfig.customBaseUrl.trim().replace(/\/+$/, ""),
+            [apiConfig.customApiKeyField]: credential.apiKey,
+          };
+          credentialSource = credential.source || credentialSource;
+        } else {
+          const snapshot = await this.operations.loadClaudeConfigSnapshot(apiConfig.customConfigDir || undefined);
+          const configuredBaseUrl = snapshot.route.customBaseUrl?.trim().replace(/\/+$/, "") ?? "";
+          if (
+            snapshot.route.activeProvider !== "custom"
+            || configuredBaseUrl !== apiConfig.customBaseUrl.trim().replace(/\/+$/, "")
+          ) {
+            throw new Error(
+              `No readable API key was found for ${apiConfig.customProviderName}. Write this route to Claude Code settings before testing CLI-managed credentials.`,
+            );
+          }
+          credentialSource = snapshot.credentialSource || credentialSource;
+        }
+      }
+      await this.operations.requestSummaryCompletion(
+        endpoint,
+        prompt,
+        AbortSignal.timeout(30_000),
+      );
+      return {
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        credentialSource,
+      };
+    }
+
+    const apiConfig = this.withPresetDefaults(input.apiConfig);
+    const endpoint = buildCodexExecEndpoint({
+      ...settings,
+      summaryCodexModel: apiConfig.activeProvider === "custom" ? apiConfig.customModel : "",
+      summaryCodexConfigDir: apiConfig.customConfigDir,
+    });
+    let credentialSource = "Codex CLI authentication";
+    let testProxy: CodexChatProxyPort | null = null;
+    try {
+      if (apiConfig.activeProvider === "official") {
+        // Authentication still comes from CODEX_HOME, while routing/model/plugin config is ignored.
+        endpoint.cliArgs = ["--ignore-user-config"];
+      } else {
+        if (!apiConfig.customBaseUrl.trim()) {
+          throw new Error(`Base URL is required to test ${apiConfig.customProviderName}.`);
+        }
+        const typedKey = apiConfig.customApiKey.trim();
+        const storedKey = typedKey
+          ? ""
+          : this.dependencies.keys.get("codex", apiConfig.customProviderId);
+        const credential = await this.operations.resolveCodexProviderCredential({
+          codexHome: apiConfig.customConfigDir || undefined,
+          providerId: apiConfig.customProviderId,
+          apiKey: typedKey || storedKey,
+          apiKeySource: typedKey
+            ? "API key field"
+            : storedKey
+              ? "AgentRecall codex key store"
+              : undefined,
+        });
+        credentialSource = credential.source || credentialSource;
+        const requestedBaseUrl = apiConfig.customBaseUrl.trim().replace(/\/+$/, "");
+        const providerId = apiConfig.customProviderId === "custom"
+          ? "agent-recall-connection-test"
+          : apiConfig.customProviderId;
+        const providerKey = /^[A-Za-z0-9_-]+$/.test(providerId)
+          ? providerId
+          : JSON.stringify(providerId);
+        if (!credential.apiKey) {
+          if (apiConfig.customApiFormat === "openai_chat") {
+            throw new Error(
+              `${apiConfig.customProviderName} uses the local Codex Chat proxy, but no API key was readable by AgentRecall.`,
+            );
+          }
+          const snapshot = await this.operations.loadCodexConfigSnapshot(apiConfig.customConfigDir || undefined);
+          const configuredProvider = snapshot.providers.find((provider) => provider.id === providerId);
+          if (
+            !configuredProvider
+            || configuredProvider.baseUrl.trim().replace(/\/+$/, "") !== requestedBaseUrl
+          ) {
+            throw new Error(
+              `No readable API key was found for ${apiConfig.customProviderName}. Write this route to Codex config before testing CLI-managed credentials.`,
+            );
+          }
+          credentialSource = configuredProvider.credentialSource || credentialSource;
+          endpoint.cliArgs = ["-c", `model_provider=${JSON.stringify(providerId)}`];
+        } else {
+          let baseUrl = requestedBaseUrl;
+          if (apiConfig.customApiFormat === "openai_chat") {
+            testProxy = this.operations.createCodexChatProxy({
+              upstreamBaseUrl: baseUrl,
+              apiKey: credential.apiKey,
+              model: apiConfig.customModel,
+              listenHost: "127.0.0.1",
+              listenPort: 0,
+            });
+            baseUrl = (await testProxy.start()).baseUrl;
+          }
+          const prefix = `model_providers.${providerKey}`;
+          endpoint.cliArgs = [
+            "-c", `model_provider=${JSON.stringify(providerId)}`,
+            "-c", `${prefix}.name=${JSON.stringify(apiConfig.customProviderName || providerId)}`,
+            "-c", `${prefix}.base_url=${JSON.stringify(baseUrl)}`,
+            "-c", `${prefix}.wire_api="responses"`,
+            "-c", `${prefix}.requires_openai_auth=true`,
+            "-c", `${prefix}.env_key="OPENAI_API_KEY"`,
+          ];
+          endpoint.env = { ...endpoint.env, OPENAI_API_KEY: credential.apiKey };
+        }
+      }
+      await this.operations.requestSummaryCompletion(
+        endpoint,
+        prompt,
+        AbortSignal.timeout(30_000),
+      );
+      return {
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        credentialSource,
+      };
+    } finally {
+      await testProxy?.stop();
+    }
   }
 
   async testSummaryProviderConnection(

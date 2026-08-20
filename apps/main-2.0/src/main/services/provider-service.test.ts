@@ -13,6 +13,25 @@ function createHarness(settings: AppSettings = cloneSettings()) {
     providerConfigDirectoryExists: vi.fn(async () => true),
     loadCodexProfileDefaults: vi.fn(async () => ({})),
     loadClaudeApiConfigDefaults: vi.fn(async () => ({})),
+    loadCodexConfigSnapshot: vi.fn(async () => ({
+      codexHome: "/tmp/codex",
+      configPath: "/tmp/codex/config.toml",
+      exists: false,
+      activeProviderId: "openai",
+      activeModel: "",
+      activeProvider: null,
+      providers: [],
+      credentialSource: null,
+      hasApiKey: false,
+    })),
+    loadClaudeConfigSnapshot: vi.fn(async () => ({
+      claudeHome: "/tmp/claude",
+      settingsPath: "/tmp/claude/settings.json",
+      exists: false,
+      route: {},
+      credentialSource: null,
+      hasApiKey: false,
+    })),
     probeCodexModels: vi.fn(async () => ({
       models: ["codex-model-a"],
       endpoint: "https://api.example/v1/models",
@@ -225,6 +244,204 @@ describe("summary Claude route isolation", () => {
     expect(harness.operations.probeCodexModels).toHaveBeenCalledWith(expect.objectContaining({
       codexHome: "/tmp/summary-codex",
     }));
+  });
+});
+
+describe("Provider connection tests", () => {
+  it("uses each official CLI without requiring AgentRecall to read an API key", async () => {
+    const settings = cloneSettings();
+    settings.codexBinary = "custom-codex";
+    settings.claudeBinary = "custom-claude";
+    const harness = createHarness(settings);
+
+    const codex = await harness.service.testProviderConnection({
+      target: "codex",
+      apiConfig: { activeProvider: "official", customConfigDir: "/tmp/provider-codex" },
+    });
+    const claude = await harness.service.testProviderConnection({
+      target: "claude",
+      apiConfig: { activeProvider: "official", customConfigDir: "/tmp/provider-claude" },
+    });
+
+    expect(harness.operations.resolveCodexProviderCredential).not.toHaveBeenCalled();
+    expect(harness.operations.resolveClaudeProviderCredential).not.toHaveBeenCalled();
+    expect(harness.operations.requestSummaryCompletion).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        apiFormat: "codex_exec",
+        command: "custom-codex",
+        env: { CODEX_HOME: "/tmp/provider-codex" },
+        cliArgs: ["--ignore-user-config"],
+      }),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(harness.operations.requestSummaryCompletion).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        apiFormat: "claude_exec",
+        command: "custom-claude",
+        env: expect.objectContaining({ CLAUDE_CONFIG_DIR: "/tmp/provider-claude", ANTHROPIC_BASE_URL: "" }),
+        cliArgs: expect.arrayContaining(["--settings"]),
+      }),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(codex.credentialSource).toBe("Codex CLI authentication");
+    expect(claude.credentialSource).toBe("Claude Code CLI authentication");
+  });
+
+  it("tests an unsaved Codex route with read-only CLI overrides and a stored key", async () => {
+    const harness = createHarness();
+    harness.keys.set("codex:gateway", "stored-key");
+    vi.mocked(harness.operations.resolveCodexProviderCredential!).mockResolvedValue({
+      apiKey: "stored-key",
+      source: "AgentRecall codex key store",
+    });
+
+    const result = await harness.service.testProviderConnection({
+      target: "codex",
+      apiConfig: {
+        activeProvider: "custom",
+        customProviderId: "gateway",
+        customConfigDir: "/tmp/provider-codex",
+        customProviderName: "Gateway",
+        customBaseUrl: "https://gateway.example/v1/",
+        customApiKey: "",
+        customModel: "gpt-test",
+        customApiFormat: "openai_responses",
+      },
+    });
+
+    expect(harness.operations.resolveCodexProviderCredential).toHaveBeenCalledWith(expect.objectContaining({
+      apiKey: "stored-key",
+      apiKeySource: "AgentRecall codex key store",
+      codexHome: "/tmp/provider-codex",
+    }));
+    expect(harness.operations.requestSummaryCompletion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiFormat: "codex_exec",
+        modelArg: "gpt-test",
+        env: {
+          CODEX_HOME: "/tmp/provider-codex",
+          OPENAI_API_KEY: "stored-key",
+        },
+        cliArgs: expect.arrayContaining([
+          "model_provider=\"gateway\"",
+          "model_providers.gateway.base_url=\"https://gateway.example/v1\"",
+        ]),
+      }),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(result.credentialSource).toBe("AgentRecall codex key store");
+  });
+
+  it("preserves an existing Codex provider's CLI-managed authentication", async () => {
+    const harness = createHarness();
+    vi.mocked(harness.operations.loadCodexConfigSnapshot!).mockResolvedValue({
+      codexHome: "/tmp/provider-codex",
+      configPath: "/tmp/provider-codex/config.toml",
+      exists: true,
+      activeProviderId: "gateway",
+      activeModel: "gpt-test",
+      activeProvider: null,
+      providers: [{
+        id: "gateway",
+        name: "Gateway",
+        baseUrl: "https://gateway.example/v1",
+        wireApi: "responses",
+        envKey: "",
+        requiresOpenaiAuth: false,
+        hasApiKey: true,
+        credentialSource: "config.toml gateway.auth",
+      }],
+      credentialSource: "config.toml gateway.auth",
+      hasApiKey: true,
+    });
+
+    const result = await harness.service.testProviderConnection({
+      target: "codex",
+      apiConfig: {
+        activeProvider: "custom",
+        customProviderId: "gateway",
+        customConfigDir: "/tmp/provider-codex",
+        customProviderName: "Gateway",
+        customBaseUrl: "https://gateway.example/v1",
+        customApiKey: "",
+        customModel: "gpt-test",
+        customApiFormat: "openai_responses",
+      },
+    });
+
+    expect(harness.operations.requestSummaryCompletion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: { CODEX_HOME: "/tmp/provider-codex" },
+        cliArgs: ["-c", 'model_provider="gateway"'],
+      }),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(result.credentialSource).toBe("config.toml gateway.auth");
+  });
+
+  it("does not send official CLI authentication to a new third-party route", async () => {
+    const harness = createHarness();
+
+    await expect(harness.service.testProviderConnection({
+      target: "codex",
+      apiConfig: {
+        activeProvider: "custom",
+        customProviderId: "unwritten",
+        customProviderName: "Unwritten",
+        customBaseUrl: "https://unwritten.example/v1",
+        customApiKey: "",
+        customModel: "gpt-test",
+        customApiFormat: "openai_responses",
+      },
+    })).rejects.toThrow(/Write this route to Codex config/);
+    expect(harness.operations.requestSummaryCompletion).not.toHaveBeenCalled();
+  });
+
+  it("lets Claude Code resolve credentials that are not readable from its settings file", async () => {
+    const harness = createHarness();
+    vi.mocked(harness.operations.loadClaudeConfigSnapshot!).mockResolvedValue({
+      claudeHome: "/tmp/provider-claude",
+      settingsPath: "/tmp/provider-claude/settings.json",
+      exists: true,
+      route: {
+        activeProvider: "custom",
+        customBaseUrl: "https://gateway.example/anthropic",
+      },
+      credentialSource: "settings.json apiKeyHelper",
+      hasApiKey: true,
+    });
+
+    const result = await harness.service.testProviderConnection({
+      target: "claude",
+      apiConfig: {
+        activeProvider: "custom",
+        customProviderId: "gateway",
+        customConfigDir: "/tmp/provider-claude",
+        customProviderName: "Gateway",
+        customBaseUrl: "https://gateway.example/anthropic/",
+        customApiKey: "",
+        customModel: "claude-test",
+        customApiFormat: "anthropic",
+        customApiKeyField: "ANTHROPIC_AUTH_TOKEN",
+      },
+    });
+
+    expect(harness.operations.requestSummaryCompletion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiFormat: "claude_exec",
+        modelArg: "claude-test",
+        env: { CLAUDE_CONFIG_DIR: "/tmp/provider-claude" },
+      }),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(result.credentialSource).toBe("settings.json apiKeyHelper");
   });
 });
 

@@ -21,6 +21,8 @@ export interface SummaryEndpoint {
   command?: string;
   cwd?: string;
   modelArg?: string;
+  /** Extra read-only CLI flags used to test a draft without writing user configuration. */
+  cliArgs?: string[];
   reasoningEffort?: string;
   /**
    * Extra environment for CLI-backed endpoints. This is how a summary source points `codex` /
@@ -448,6 +450,7 @@ async function codexExecCompletion(endpoint: SummaryEndpoint, messages: ChatMess
       ...(endpoint.reasoningEffort
         ? ["--config", `model_reasoning_effort=\"${endpoint.reasoningEffort}\"`]
         : []),
+      ...(endpoint.cliArgs ?? []),
     ], {
       cwd,
       signal: mergedSignal,
@@ -544,6 +547,7 @@ async function claudeExecCompletion(endpoint: SummaryEndpoint, messages: ChatMes
     "--permission-mode",
     "bypassPermissions",
     ...(endpoint.modelArg ? ["--model", endpoint.modelArg] : []),
+    ...(endpoint.cliArgs ?? []),
   ];
 
   return new Promise<string>((resolve, reject) => {
