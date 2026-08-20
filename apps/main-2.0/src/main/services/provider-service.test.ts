@@ -1,3 +1,4 @@
+import { access, readdir } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import { defaultSettings, type AppSettings } from "../../core/platform";
 import { ProviderService, type ProviderServiceOperations } from "./provider-service";
@@ -248,11 +249,18 @@ describe("summary Claude route isolation", () => {
 });
 
 describe("Provider connection tests", () => {
-  it("uses each official CLI without requiring AgentRecall to read an API key", async () => {
+  it("uses each official CLI in an empty, tool-free probe without reading an API key", async () => {
     const settings = cloneSettings();
     settings.codexBinary = "custom-codex";
     settings.claudeBinary = "custom-claude";
     const harness = createHarness(settings);
+    const testCwds: string[] = [];
+    vi.mocked(harness.operations.requestSummaryCompletion!).mockImplementation(async (endpoint) => {
+      expect(endpoint.cwd).toContain("agent-recall-provider-test-");
+      expect(await readdir(endpoint.cwd!)).toEqual([]);
+      testCwds.push(endpoint.cwd!);
+      return "OK";
+    });
 
     const codex = await harness.service.testProviderConnection({
       target: "codex",
@@ -271,7 +279,19 @@ describe("Provider connection tests", () => {
         apiFormat: "codex_exec",
         command: "custom-codex",
         env: { CODEX_HOME: "/tmp/provider-codex" },
-        cliArgs: ["--ignore-user-config"],
+        cliArgs: expect.arrayContaining([
+          "--ignore-user-config",
+          "features.shell_tool=false",
+          "features.unified_exec=false",
+          "features.apps=false",
+          "features.remote_plugin=false",
+          "features.multi_agent=false",
+          "features.hooks=false",
+          'web_search="disabled"',
+          "tools.view_image=false",
+          "mcp_servers={}",
+          "project_doc_max_bytes=0",
+        ]),
       }),
       expect.anything(),
       expect.anything(),
@@ -282,22 +302,48 @@ describe("Provider connection tests", () => {
         apiFormat: "claude_exec",
         command: "custom-claude",
         env: expect.objectContaining({ CLAUDE_CONFIG_DIR: "/tmp/provider-claude", ANTHROPIC_BASE_URL: "" }),
-        cliArgs: expect.arrayContaining(["--settings"]),
+        cliArgs: expect.arrayContaining(["--safe-mode", "--tools", "", "--no-session-persistence", "--settings"]),
       }),
       expect.anything(),
       expect.anything(),
     );
     expect(codex.credentialSource).toBe("Codex CLI authentication");
     expect(claude.credentialSource).toBe("Claude Code CLI authentication");
+    const claudeEndpoint = vi.mocked(harness.operations.requestSummaryCompletion!).mock.calls[1]?.[0];
+    expect(claudeEndpoint?.cliArgs?.slice(0, 4)).toEqual([
+      "--safe-mode",
+      "--tools",
+      "",
+      "--no-session-persistence",
+    ]);
+    const settingsIndex = claudeEndpoint?.cliArgs?.indexOf("--settings") ?? -1;
+    const settingsOverride = JSON.parse(claudeEndpoint?.cliArgs?.[settingsIndex + 1] ?? "{}") as Record<string, unknown>;
+    expect(settingsOverride).not.toHaveProperty("apiKeyHelper");
+    for (const testCwd of testCwds) {
+      await expect(access(testCwd)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  it("removes the isolated probe directory when a CLI request fails", async () => {
+    const harness = createHarness();
+    let testCwd = "";
+    vi.mocked(harness.operations.requestSummaryCompletion!).mockImplementation(async (endpoint) => {
+      testCwd = endpoint.cwd!;
+      throw new Error("probe failed");
+    });
+
+    await expect(harness.service.testProviderConnection({
+      target: "codex",
+      apiConfig: { activeProvider: "official" },
+    })).rejects.toThrow("probe failed");
+
+    expect(testCwd).toContain("agent-recall-provider-test-");
+    await expect(access(testCwd)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("tests an unsaved Codex route with read-only CLI overrides and a stored key", async () => {
     const harness = createHarness();
     harness.keys.set("codex:gateway", "stored-key");
-    vi.mocked(harness.operations.resolveCodexProviderCredential!).mockResolvedValue({
-      apiKey: "stored-key",
-      source: "AgentRecall codex key store",
-    });
 
     const result = await harness.service.testProviderConnection({
       target: "codex",
@@ -313,27 +359,26 @@ describe("Provider connection tests", () => {
       },
     });
 
-    expect(harness.operations.resolveCodexProviderCredential).toHaveBeenCalledWith(expect.objectContaining({
-      apiKey: "stored-key",
-      apiKeySource: "AgentRecall codex key store",
-      codexHome: "/tmp/provider-codex",
+    expect(harness.operations.resolveCodexProviderCredential).not.toHaveBeenCalled();
+    const endpoint = vi.mocked(harness.operations.requestSummaryCompletion!).mock.calls[0][0];
+    expect(endpoint).toEqual(expect.objectContaining({
+      apiFormat: "codex_exec",
+      modelArg: "gpt-test",
+      env: {
+        CODEX_HOME: endpoint.cwd,
+        OPENAI_API_KEY: "stored-key",
+      },
+      cliArgs: expect.arrayContaining([
+        "--ignore-user-config",
+        "features.shell_tool=false",
+        "features.unified_exec=false",
+        "model_provider=\"agent-recall-connection-test\"",
+        "model_providers.agent-recall-connection-test.base_url=\"https://gateway.example/v1\"",
+        "model_providers.agent-recall-connection-test.requires_openai_auth=false",
+        "model_providers.agent-recall-connection-test.env_key=\"OPENAI_API_KEY\"",
+      ]),
     }));
-    expect(harness.operations.requestSummaryCompletion).toHaveBeenCalledWith(
-      expect.objectContaining({
-        apiFormat: "codex_exec",
-        modelArg: "gpt-test",
-        env: {
-          CODEX_HOME: "/tmp/provider-codex",
-          OPENAI_API_KEY: "stored-key",
-        },
-        cliArgs: expect.arrayContaining([
-          "model_provider=\"agent-recall-connection-test\"",
-          "model_providers.agent-recall-connection-test.base_url=\"https://gateway.example/v1\"",
-        ]),
-      }),
-      expect.anything(),
-      expect.anything(),
-    );
+    expect(endpoint.cliArgs?.join(" ")).not.toContain("stored-key");
     expect(result.credentialSource).toBe("AgentRecall codex key store");
   });
 
@@ -377,16 +422,35 @@ describe("Provider connection tests", () => {
     expect(harness.operations.requestSummaryCompletion).toHaveBeenCalledWith(
       expect.objectContaining({
         env: { CODEX_HOME: "/tmp/provider-codex" },
-        cliArgs: ["-c", 'model_provider="gateway"'],
+        cliArgs: expect.arrayContaining([
+          "features.shell_tool=false",
+          "features.unified_exec=false",
+          "features.apps=false",
+          "features.remote_plugin=false",
+          "features.multi_agent=false",
+          "features.hooks=false",
+          'web_search="disabled"',
+          "tools.view_image=false",
+          "mcp_servers={}",
+          "project_doc_max_bytes=0",
+          'model_provider="gateway"',
+        ]),
       }),
       expect.anything(),
       expect.anything(),
     );
+    const endpoint = vi.mocked(harness.operations.requestSummaryCompletion!).mock.calls[0][0];
+    expect(endpoint.cliArgs).not.toContain("--ignore-user-config");
+    expect(harness.operations.resolveCodexProviderCredential).not.toHaveBeenCalled();
     expect(result.credentialSource).toBe("config.toml gateway.auth");
   });
 
   it("does not send official CLI authentication to a new third-party route", async () => {
     const harness = createHarness();
+    vi.mocked(harness.operations.resolveCodexProviderCredential!).mockResolvedValue({
+      apiKey: "unrelated-key",
+      source: "auth.json OPENAI_API_KEY",
+    });
 
     await expect(harness.service.testProviderConnection({
       target: "codex",
@@ -400,6 +464,7 @@ describe("Provider connection tests", () => {
         customApiFormat: "openai_responses",
       },
     })).rejects.toThrow(/Write this route to Codex config/);
+    expect(harness.operations.resolveCodexProviderCredential).not.toHaveBeenCalled();
     expect(harness.operations.requestSummaryCompletion).not.toHaveBeenCalled();
   });
 
@@ -437,11 +502,101 @@ describe("Provider connection tests", () => {
         apiFormat: "claude_exec",
         modelArg: "claude-test",
         env: { CLAUDE_CONFIG_DIR: "/tmp/provider-claude" },
+        cliArgs: ["--safe-mode", "--tools", "", "--no-session-persistence"],
       }),
       expect.anything(),
       expect.anything(),
     );
+    expect(harness.operations.resolveClaudeProviderCredential).not.toHaveBeenCalled();
     expect(result.credentialSource).toBe("settings.json apiKeyHelper");
+  });
+
+  it("isolates a stored Claude key from user settings, helpers, OAuth, and process arguments", async () => {
+    const harness = createHarness();
+    harness.keys.set("claude:gateway", "stored-key");
+
+    const result = await harness.service.testProviderConnection({
+      target: "claude",
+      apiConfig: {
+        activeProvider: "custom",
+        customProviderId: "gateway",
+        customConfigDir: "/tmp/provider-claude",
+        customProviderName: "Gateway",
+        customBaseUrl: "https://gateway.example/anthropic/",
+        customApiKey: "",
+        customModel: "claude-test",
+        customApiFormat: "anthropic",
+        customApiKeyField: "ANTHROPIC_AUTH_TOKEN",
+      },
+    });
+
+    const endpoint = vi.mocked(harness.operations.requestSummaryCompletion!).mock.calls[0][0];
+    expect(endpoint.env).toEqual({
+      CLAUDE_CONFIG_DIR: endpoint.cwd,
+      ANTHROPIC_BASE_URL: "https://gateway.example/anthropic",
+      ANTHROPIC_AUTH_TOKEN: "stored-key",
+      ANTHROPIC_API_KEY: "",
+      CLAUDE_CODE_OAUTH_TOKEN: "",
+    });
+    expect(endpoint.cliArgs).toEqual(["--safe-mode", "--tools", "", "--no-session-persistence"]);
+    expect(endpoint.cliArgs?.join(" ")).not.toContain("stored-key");
+    expect(harness.operations.resolveClaudeProviderCredential).not.toHaveBeenCalled();
+    expect(result.credentialSource).toBe("AgentRecall claude key store");
+  });
+
+  it("does not treat an OAuth-only Claude login as a third-party API key", async () => {
+    const harness = createHarness();
+    vi.mocked(harness.operations.loadClaudeConfigSnapshot!).mockResolvedValue({
+      claudeHome: "/tmp/provider-claude",
+      settingsPath: "/tmp/provider-claude/settings.json",
+      exists: true,
+      route: {
+        activeProvider: "custom",
+        customBaseUrl: "https://gateway.example/anthropic",
+      },
+      credentialSource: null,
+      hasApiKey: false,
+    });
+
+    await expect(harness.service.testProviderConnection({
+      target: "claude",
+      apiConfig: {
+        activeProvider: "custom",
+        customProviderId: "gateway",
+        customConfigDir: "/tmp/provider-claude",
+        customProviderName: "Gateway",
+        customBaseUrl: "https://gateway.example/anthropic",
+        customApiKey: "",
+        customModel: "claude-test",
+        customApiFormat: "anthropic",
+        customApiKeyField: "ANTHROPIC_AUTH_TOKEN",
+      },
+    })).rejects.toThrow(/No readable API key/);
+    expect(harness.operations.requestSummaryCompletion).not.toHaveBeenCalled();
+  });
+
+  it("does not inject an unrelated Claude resolver key into an unwritten route", async () => {
+    const harness = createHarness();
+    vi.mocked(harness.operations.resolveClaudeProviderCredential!).mockResolvedValue({
+      apiKey: "unrelated-key",
+      source: "environment ANTHROPIC_API_KEY",
+    });
+
+    await expect(harness.service.testProviderConnection({
+      target: "claude",
+      apiConfig: {
+        activeProvider: "custom",
+        customProviderId: "unwritten",
+        customProviderName: "Unwritten",
+        customBaseUrl: "https://unwritten.example/anthropic",
+        customApiKey: "",
+        customModel: "claude-test",
+        customApiFormat: "anthropic",
+        customApiKeyField: "ANTHROPIC_API_KEY",
+      },
+    })).rejects.toThrow(/Write this route to Claude Code settings/);
+    expect(harness.operations.resolveClaudeProviderCredential).not.toHaveBeenCalled();
+    expect(harness.operations.requestSummaryCompletion).not.toHaveBeenCalled();
   });
 });
 

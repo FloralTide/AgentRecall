@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   API_PROVIDER_PRESETS,
   CLAUDE_API_PROVIDER_PRESETS,
@@ -112,6 +115,26 @@ function summaryConnectionApiFormat(
   }
   return apiFormat;
 }
+
+const CLAUDE_CONNECTION_TEST_ARGS = [
+  "--safe-mode",
+  "--tools",
+  "",
+  "--no-session-persistence",
+] as const;
+
+const CODEX_CONNECTION_TEST_ARGS = [
+  "-c", "features.shell_tool=false",
+  "-c", "features.unified_exec=false",
+  "-c", "features.apps=false",
+  "-c", "features.remote_plugin=false",
+  "-c", "features.multi_agent=false",
+  "-c", "features.hooks=false",
+  "-c", 'web_search="disabled"',
+  "-c", "tools.view_image=false",
+  "-c", "mcp_servers={}",
+  "-c", "project_doc_max_bytes=0",
+] as const;
 
 const defaultOperations: ProviderServiceOperations = {
   providerConfigDirectoryExists,
@@ -339,7 +362,9 @@ export class ProviderService {
         summaryClaudeModel: apiConfig.activeProvider === "custom" ? apiConfig.customModel : "",
         summaryClaudeConfigDir: apiConfig.customConfigDir,
       });
+      endpoint.cliArgs = [...CLAUDE_CONNECTION_TEST_ARGS];
       let credentialSource = "Claude Code CLI authentication";
+      let isolateConfigHome = false;
       if (apiConfig.activeProvider === "official") {
         const officialEnv = {
           ANTHROPIC_BASE_URL: "",
@@ -354,38 +379,38 @@ export class ProviderService {
           ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: "",
         };
         endpoint.env = { ...endpoint.env, ...officialEnv };
-        endpoint.cliArgs = ["--settings", JSON.stringify({ env: officialEnv })];
+        endpoint.cliArgs.push("--settings", JSON.stringify({ env: officialEnv }));
       } else {
         if (!apiConfig.customBaseUrl.trim()) {
           throw new Error(`Base URL is required to test ${apiConfig.customProviderName}.`);
         }
+        const requestedBaseUrl = apiConfig.customBaseUrl.trim().replace(/\/+$/, "");
         const typedKey = apiConfig.customApiKey.trim();
-        const storedKey = typedKey
+        const storedKey = (typedKey
           ? ""
-          : this.dependencies.keys.get("claude", apiConfig.customProviderId);
-        const credential = await this.operations.resolveClaudeProviderCredential({
-          claudeHome: apiConfig.customConfigDir || undefined,
-          apiKeyField: apiConfig.customApiKeyField,
-          apiKey: typedKey || storedKey,
-          apiKeySource: typedKey
-            ? "API key field"
-            : storedKey
-              ? "AgentRecall claude key store"
-              : undefined,
-        });
-        if (credential.apiKey) {
+          : this.dependencies.keys.get("claude", apiConfig.customProviderId)).trim();
+        const providerKey = typedKey || storedKey;
+        if (providerKey) {
+          const authEnv = {
+            ANTHROPIC_BASE_URL: requestedBaseUrl,
+            ANTHROPIC_AUTH_TOKEN: "",
+            ANTHROPIC_API_KEY: "",
+            CLAUDE_CODE_OAUTH_TOKEN: "",
+            [apiConfig.customApiKeyField]: providerKey,
+          };
           endpoint.env = {
             ...endpoint.env,
-            ANTHROPIC_BASE_URL: apiConfig.customBaseUrl.trim().replace(/\/+$/, ""),
-            [apiConfig.customApiKeyField]: credential.apiKey,
+            ...authEnv,
           };
-          credentialSource = credential.source || credentialSource;
+          isolateConfigHome = true;
+          credentialSource = typedKey ? "API key field" : "AgentRecall claude key store";
         } else {
           const snapshot = await this.operations.loadClaudeConfigSnapshot(apiConfig.customConfigDir || undefined);
           const configuredBaseUrl = snapshot.route.customBaseUrl?.trim().replace(/\/+$/, "") ?? "";
           if (
             snapshot.route.activeProvider !== "custom"
-            || configuredBaseUrl !== apiConfig.customBaseUrl.trim().replace(/\/+$/, "")
+            || configuredBaseUrl !== requestedBaseUrl
+            || !snapshot.hasApiKey
           ) {
             throw new Error(
               `No readable API key was found for ${apiConfig.customProviderName}. Write this route to Claude Code settings before testing CLI-managed credentials.`,
@@ -394,15 +419,22 @@ export class ProviderService {
           credentialSource = snapshot.credentialSource || credentialSource;
         }
       }
-      await this.operations.requestSummaryCompletion(
-        endpoint,
-        prompt,
-        AbortSignal.timeout(30_000),
-      );
-      return {
-        elapsedMs: Math.max(0, Date.now() - startedAt),
-        credentialSource,
-      };
+      const testCwd = await mkdtemp(path.join(tmpdir(), "agent-recall-provider-test-"));
+      endpoint.cwd = testCwd;
+      if (isolateConfigHome) endpoint.env = { ...endpoint.env, CLAUDE_CONFIG_DIR: testCwd };
+      try {
+        await this.operations.requestSummaryCompletion(
+          endpoint,
+          prompt,
+          AbortSignal.timeout(30_000),
+        );
+        return {
+          elapsedMs: Math.max(0, Date.now() - startedAt),
+          credentialSource,
+        };
+      } finally {
+        await rm(testCwd, { recursive: true, force: true });
+      }
     }
 
     const apiConfig = this.withPresetDefaults(input.apiConfig);
@@ -413,31 +445,27 @@ export class ProviderService {
     });
     let credentialSource = "Codex CLI authentication";
     let testProxy: CodexChatProxyPort | null = null;
+    let isolateConfigHome = false;
     try {
       if (apiConfig.activeProvider === "official") {
         // Authentication still comes from CODEX_HOME, while routing/model/plugin config is ignored.
-        endpoint.cliArgs = ["--ignore-user-config"];
+        endpoint.cliArgs = ["--ignore-user-config", ...CODEX_CONNECTION_TEST_ARGS];
       } else {
         if (!apiConfig.customBaseUrl.trim()) {
           throw new Error(`Base URL is required to test ${apiConfig.customProviderName}.`);
         }
         const typedKey = apiConfig.customApiKey.trim();
-        const storedKey = typedKey
+        const storedKey = (typedKey
           ? ""
-          : this.dependencies.keys.get("codex", apiConfig.customProviderId);
-        const credential = await this.operations.resolveCodexProviderCredential({
-          codexHome: apiConfig.customConfigDir || undefined,
-          providerId: apiConfig.customProviderId,
-          apiKey: typedKey || storedKey,
-          apiKeySource: typedKey
-            ? "API key field"
-            : storedKey
-              ? "AgentRecall codex key store"
-              : undefined,
-        });
-        credentialSource = credential.source || credentialSource;
+          : this.dependencies.keys.get("codex", apiConfig.customProviderId)).trim();
+        const providerKey = typedKey || storedKey;
+        credentialSource = typedKey
+          ? "API key field"
+          : storedKey
+            ? "AgentRecall codex key store"
+            : credentialSource;
         const requestedBaseUrl = apiConfig.customBaseUrl.trim().replace(/\/+$/, "");
-        if (!credential.apiKey) {
+        if (!providerKey) {
           if (apiConfig.customApiFormat === "openai_chat") {
             throw new Error(
               `${apiConfig.customProviderName} uses the local Codex Chat proxy, but no API key was readable by AgentRecall.`,
@@ -456,7 +484,10 @@ export class ProviderService {
             );
           }
           credentialSource = configuredProvider.credentialSource || credentialSource;
-          endpoint.cliArgs = ["-c", `model_provider=${JSON.stringify(apiConfig.customProviderId)}`];
+          endpoint.cliArgs = [
+            ...CODEX_CONNECTION_TEST_ARGS,
+            "-c", `model_provider=${JSON.stringify(apiConfig.customProviderId)}`,
+          ];
         } else {
           // A reserved one-shot provider prevents an existing provider's mutually exclusive
           // `auth` block from being combined with the env-key authentication below.
@@ -465,7 +496,7 @@ export class ProviderService {
           if (apiConfig.customApiFormat === "openai_chat") {
             testProxy = this.operations.createCodexChatProxy({
               upstreamBaseUrl: baseUrl,
-              apiKey: credential.apiKey,
+              apiKey: providerKey,
               model: apiConfig.customModel,
               listenHost: "127.0.0.1",
               listenPort: 0,
@@ -474,25 +505,35 @@ export class ProviderService {
           }
           const prefix = `model_providers.${providerId}`;
           endpoint.cliArgs = [
+            "--ignore-user-config",
+            ...CODEX_CONNECTION_TEST_ARGS,
             "-c", `model_provider=${JSON.stringify(providerId)}`,
             "-c", `${prefix}.name=${JSON.stringify(apiConfig.customProviderName || providerId)}`,
             "-c", `${prefix}.base_url=${JSON.stringify(baseUrl)}`,
             "-c", `${prefix}.wire_api="responses"`,
-            "-c", `${prefix}.requires_openai_auth=true`,
+            "-c", `${prefix}.requires_openai_auth=false`,
             "-c", `${prefix}.env_key="OPENAI_API_KEY"`,
           ];
-          endpoint.env = { ...endpoint.env, OPENAI_API_KEY: credential.apiKey };
+          endpoint.env = { ...endpoint.env, OPENAI_API_KEY: providerKey };
+          isolateConfigHome = true;
         }
       }
-      await this.operations.requestSummaryCompletion(
-        endpoint,
-        prompt,
-        AbortSignal.timeout(30_000),
-      );
-      return {
-        elapsedMs: Math.max(0, Date.now() - startedAt),
-        credentialSource,
-      };
+      const testCwd = await mkdtemp(path.join(tmpdir(), "agent-recall-provider-test-"));
+      endpoint.cwd = testCwd;
+      if (isolateConfigHome) endpoint.env = { ...endpoint.env, CODEX_HOME: testCwd };
+      try {
+        await this.operations.requestSummaryCompletion(
+          endpoint,
+          prompt,
+          AbortSignal.timeout(30_000),
+        );
+        return {
+          elapsedMs: Math.max(0, Date.now() - startedAt),
+          credentialSource,
+        };
+      } finally {
+        await rm(testCwd, { recursive: true, force: true });
+      }
     } finally {
       await testProxy?.stop();
     }
