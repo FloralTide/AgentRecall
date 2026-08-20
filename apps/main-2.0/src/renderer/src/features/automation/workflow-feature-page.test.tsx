@@ -212,6 +212,107 @@ describe("WorkflowFeaturePage live output", () => {
     expect(deleteButton?.disabled).toBe(true);
   });
 
+  it("opens the Workflow Core definition requested by the workbench", async () => {
+    const first = runningWorkflow();
+    first.definition.id = "workflow-a";
+    first.definition.name = "Workflow A";
+    first.run.workflowId = first.definition.id;
+    const requested = runningWorkflow();
+    requested.definition.id = "workflow-b";
+    requested.definition.name = "Workflow B";
+    requested.run.workflowId = requested.definition.id;
+    const onInitialRequestConsumed = vi.fn();
+    api.getWorkflowCore.mockResolvedValue({
+      definitions: [first.definition, requested.definition],
+      runs: [first.run, requested.run],
+    });
+
+    await act(async () => {
+      root.render(
+        <WorkflowFeaturePage
+          language="zh"
+          globalReviewEnabled
+          runtimeReviewEnabled
+          initialRequest={{ workflowId: requested.definition.id }}
+          onInitialRequestConsumed={onInitialRequestConsumed}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.getWorkflowCore).toHaveBeenCalledWith(requested.definition.id);
+    const activeDefinition = container.querySelector<HTMLButtonElement>(".workflow-core-list-group > button.is-active");
+    expect(activeDefinition?.textContent).toContain("Workflow B");
+    expect(container.querySelector(".workflow-core-title")?.textContent).toContain("Workflow B");
+    expect(onInitialRequestConsumed).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to a real definition when a requested Workflow no longer exists", async () => {
+    const existing = runningWorkflow();
+    api.getWorkflowCore.mockResolvedValue({
+      definitions: [existing.definition],
+      runs: [existing.run],
+    });
+
+    await act(async () => {
+      root.render(
+        <WorkflowFeaturePage
+          language="zh"
+          globalReviewEnabled
+          runtimeReviewEnabled
+          initialRequest={{ workflowId: "deleted-workflow" }}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector<HTMLButtonElement>(".workflow-core-list-group > button.is-active")?.textContent)
+      .toContain(existing.definition.name);
+  });
+
+  it("creates a new Core draft when requested by the workbench", async () => {
+    const existing = runningWorkflow();
+    const onInitialRequestConsumed = vi.fn();
+    api.chooseWorkDir.mockResolvedValue({ workDir: "/global/next" });
+    api.getWorkflowCore.mockResolvedValue({
+      definitions: [existing.definition],
+      runs: [existing.run],
+    });
+
+    await act(async () => {
+      root.render(
+        <WorkflowFeaturePage
+          language="zh"
+          globalReviewEnabled
+          runtimeReviewEnabled
+          initialRequest={{ createNew: true }}
+          onInitialRequestConsumed={onInitialRequestConsumed}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const activeDefinition = container.querySelector<HTMLButtonElement>(".workflow-core-list-group > button.is-active");
+    expect(activeDefinition?.textContent).toContain("New Workflow");
+    expect(container.querySelector(".workflow-core-title")?.textContent).toContain("New Workflow");
+    expect(api.getWorkflowCore).toHaveBeenCalledWith(undefined);
+    expect(onInitialRequestConsumed).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[aria-label='Workflow properties']")?.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".workflow-core-workspace-actions .control-btn")?.click();
+      await Promise.resolve();
+    });
+    expect(api.chooseWorkDir).toHaveBeenCalledOnce();
+    expect(api.pickDirectory).not.toHaveBeenCalled();
+  });
+
   it("persists a selected directory for an existing Workflow, ignores cancel, and clears back to global default", async () => {
     const snapshot = runningWorkflow();
     api.getWorkflowCore.mockResolvedValue({ definitions: [snapshot.definition], runs: [snapshot.run] });

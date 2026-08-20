@@ -48,6 +48,7 @@ import {
   type WorkflowAutomationPatch,
   type WorkflowAutomationProjection,
   type WorkflowSidebarSnapshot,
+  type WorkflowWorkbenchSnapshot,
 } from "../../shared/ipc/automation";
 import { resolveAutomationPaths, type AutomationPaths } from "./automation-paths";
 import { EvaluationService } from "./evaluation-service";
@@ -465,6 +466,11 @@ export class NativeAutomationService {
       throw error;
     });
     return this.workflowSidebarPromise;
+  }
+
+  async workflowWorkbench(): Promise<WorkflowWorkbenchSnapshot> {
+    await this.requirePrepared();
+    return this.appStore.loadWorkflowWorkbench();
   }
 
   private async loadWorkflowSidebar(): Promise<WorkflowSidebarSnapshot> {

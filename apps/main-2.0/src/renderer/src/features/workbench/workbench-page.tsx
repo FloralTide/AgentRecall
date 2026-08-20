@@ -27,6 +27,7 @@ import { formatRelativeTime } from "../../../../core/format-session";
 import { toolCountLabel } from "../../../../automation/engine/renderer/src/pages/mcp/mcp-tools";
 import type { InstalledSkill } from "../../../../core/skill-manager";
 import type { OpenVikingMemorySnapshot } from "../../../../core/openviking-memory";
+import type { WorkflowWorkbenchItem } from "../../../../shared/ipc/automation";
 import type { TeamChatRoomSummary } from "../../../../shared/team-chat";
 import type {
   SessionSearchResult,
@@ -44,7 +45,6 @@ import { localize } from "../../language";
 import { getLiveSessionState } from "../../live-filter";
 import { SearchBox } from "../search/search-box";
 import { TokenTrendChart } from "./token-trend-chart";
-import type { WorkbenchWorkflowItem } from "../automation/workbench-workflows";
 import {
   SOURCE_LABEL,
   isRemoteSession,
@@ -143,7 +143,9 @@ export interface WorkbenchPageProps {
   onResumeSession: (session: SessionSearchResult) => void;
   onShowSessions: (query: string) => void;
   onSelectTrendDay: (day: SessionDailyTokenUsage) => void;
-  workflows: WorkbenchWorkflowItem[];
+  workflows: WorkflowWorkbenchItem[];
+  workflowTotalCount: number;
+  activeWorkflowCount: number;
   workflowsLoading: boolean;
   workflowsError: string | null;
   onOpenWorkflow: (workflowId: string) => void;
@@ -190,6 +192,8 @@ export function WorkbenchPage({
   onShowSessions,
   onSelectTrendDay,
   workflows,
+  workflowTotalCount,
+  activeWorkflowCount,
   workflowsLoading,
   workflowsError,
   onOpenWorkflow,
@@ -232,9 +236,6 @@ export function WorkbenchPage({
   const [draggingCard, setDraggingCard] = useState<WorkbenchCardId | null>(null);
   const availableRuntimeCount = runtimes.filter((runtime) => runtime.available).length;
   const enabledMcpCount = mcpServers?.filter((server) => server.enabled).length ?? 0;
-  const activeWorkflowCount = workflows.filter(
-    (item) => item.status === "running" || item.status === "waiting_for_user",
-  ).length;
   const managedMemoryWorkspaces = memorySnapshot?.workspaces.filter((workspace) => workspace.managed) ?? [];
   const visibleSkills = [...skills]
     .sort((left, right) =>
@@ -492,8 +493,8 @@ export function WorkbenchPage({
               <small>{workflowsLoading
                 ? l("Loading workflows…", "正在加载工作流…")
                 : l(
-                  `${workflows.length} workflows · ${activeWorkflowCount} active`,
-                  `${workflows.length} 个工作流 · ${activeWorkflowCount} 个进行中`,
+                  `${workflowTotalCount} workflows · ${activeWorkflowCount} active`,
+                  `${workflowTotalCount} 个工作流 · ${activeWorkflowCount} 个进行中`,
                 )}</small>
             </div>
             <button type="button" onClick={onShowWorkflows}>
@@ -734,7 +735,7 @@ function WorkbenchFeatureCard({
   );
 }
 
-function workflowStatusLabel(status: WorkbenchWorkflowItem["status"], language: LanguageMode): string {
+function workflowStatusLabel(status: WorkflowWorkbenchItem["status"], language: LanguageMode): string {
   if (status === "waiting_for_user") return localize(language, "Needs input", "等待输入");
   if (status === "running") return localize(language, "Running", "运行中");
   if (status === "completed") return localize(language, "Completed", "已完成");

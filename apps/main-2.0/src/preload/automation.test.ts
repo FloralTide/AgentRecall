@@ -38,6 +38,16 @@ describe("createAutomationApi", () => {
     expect(ipc.invoke).toHaveBeenCalledWith(AUTOMATION_CHANNELS.workflowSidebar);
   });
 
+  it("loads the Workflow Core workbench summary through its own channel", async () => {
+    const snapshot = { workflows: [], totalCount: 0, activeCount: 0 };
+    const ipc = { invoke: vi.fn(async () => snapshot), on: vi.fn(), removeListener: vi.fn() };
+    const api = createAutomationApi(ipc as never);
+
+    await expect(api.getWorkflowWorkbench()).resolves.toBe(snapshot);
+
+    expect(ipc.invoke).toHaveBeenCalledWith(AUTOMATION_CHANNELS.workflowWorkbench);
+  });
+
   it("maps the structured Workflow API without legacy draft operations", async () => {
     const ipc = { invoke: vi.fn(async () => ({ definitions: [], runs: [] })), on: vi.fn(), removeListener: vi.fn() };
     const api = createAutomationApi(ipc as never);
