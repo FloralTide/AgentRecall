@@ -158,6 +158,34 @@ describe("ManagedSkillLibrary conflicting installation targets", () => {
     expect(updated.installations.find((item) => item.target === "codex")?.state).toBe("installed");
   });
 
+  it("rejects a target whose linked parent resolves into the managed library", () => {
+    const fixture = createManagedSkillFixture();
+    const libraryRoot = path.dirname(fixture.managedSkillPath);
+    const skillsParent = path.join(fixture.homeDir, ".codex", "skills");
+    const libraryEntriesBefore = fs.readdirSync(libraryRoot).sort();
+    fs.mkdirSync(path.dirname(skillsParent), { recursive: true });
+    fs.symlinkSync(
+      libraryRoot,
+      skillsParent,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    expect(() => fixture.library.updateTargets(
+      fixture.managedId,
+      ["codex"],
+      ["codex"],
+    )).toThrow("overlapping managed Skill target");
+
+    expect(fs.lstatSync(skillsParent).isSymbolicLink()).toBe(true);
+    expect(fs.lstatSync(fixture.managedSkillPath).isDirectory()).toBe(true);
+    expect(fs.lstatSync(fixture.managedSkillPath).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(path.join(fixture.managedSkillPath, "SKILL.md"), "utf8"))
+      .toBe("# Fixture Skill\n");
+    expect(fs.readdirSync(libraryRoot).sort()).toEqual(libraryEntriesBefore);
+    expect(fs.readdirSync(libraryRoot).some((entry) =>
+      entry.includes(".agent-recall-backup-"))).toBe(false);
+  });
+
   it("installs a normal target and force replaces a conflicting target in one update", () => {
     const fixture = createManagedSkillFixture();
     const codexTargetPath = path.join(fixture.homeDir, ".codex", "skills", fixture.managedId);

@@ -282,15 +282,35 @@ export class ManagedSkillLibrary {
         installation.state === "not-installed"
         || (installation.state === "conflict" && requestedForceTargets.has(installation.target))
       ));
+    const managedSkillRealPath = fs.realpathSync(skill.directoryPath);
+    const physicalTargetPaths = new Map<SkillInstallTarget, string>();
+    const physicalEntries = new Map<string, SkillInstallTarget>();
     for (const installation of [...pathsToStage, ...linksToCreate]) {
-      if (pathsOverlap(installation.path, skill.directoryPath)) {
+      if (physicalTargetPaths.has(installation.target)) continue;
+      const physicalTargetPath = physicalEntryPath(installation.path);
+      if (pathsOverlap(physicalTargetPath, managedSkillRealPath, this.platform)) {
         throw new Error(`Refusing to update an overlapping managed Skill target at ${installation.path}.`);
       }
+      const physicalTargetKey = comparablePath(physicalTargetPath, this.platform);
+      const existingTarget = physicalEntries.get(physicalTargetKey);
+      if (existingTarget) {
+        throw new Error(
+          `Refusing to update Skill targets ${existingTarget} and ${installation.target} because they resolve to the same path.`,
+        );
+      }
+      physicalEntries.set(physicalTargetKey, installation.target);
+      physicalTargetPaths.set(installation.target, physicalTargetKey);
     }
 
     const createdLinks: ManagedSkillInstallation[] = [];
     try {
       for (const installation of pathsToStage) {
+        if (
+          comparablePath(physicalEntryPath(installation.path), this.platform)
+          !== physicalTargetPaths.get(installation.target)
+        ) {
+          throw new Error(`Refusing to update a ${installation.target} Skill target whose parent path changed.`);
+        }
         const removingOwnedLink = !requestedTargets.has(installation.target);
         if (
           removingOwnedLink
@@ -310,6 +330,12 @@ export class ManagedSkillLibrary {
       }
       for (const installation of linksToCreate) {
         fs.mkdirSync(path.dirname(installation.path), { recursive: true });
+        if (
+          comparablePath(physicalEntryPath(installation.path), this.platform)
+          !== physicalTargetPaths.get(installation.target)
+        ) {
+          throw new Error(`Refusing to install a ${installation.target} Skill target whose parent path changed.`);
+        }
         fs.symlinkSync(skill.directoryPath, installation.path, managedSkillLinkType(this.platform));
         createdLinks.push(installation);
         if (this.inspectInstallation(managedId, installation.target).state !== "installed") {
@@ -542,9 +568,38 @@ function symlinkPointsToDirectory(linkPath: string, expectedDirectory: string): 
   }
 }
 
-function pathsOverlap(left: string, right: string): boolean {
-  const normalizedLeft = path.resolve(left);
-  const normalizedRight = path.resolve(right);
+function physicalEntryPath(entryPath: string): string {
+  const absoluteEntryPath = path.resolve(entryPath);
+  let existingAncestor = path.dirname(absoluteEntryPath);
+  const missingSegments: string[] = [];
+  while (true) {
+    try {
+      return path.join(
+        fs.realpathSync(existingAncestor),
+        ...missingSegments,
+        path.basename(absoluteEntryPath),
+      );
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      if (lstatIfPresent(existingAncestor)) {
+        throw new Error(`Cannot resolve the physical parent of Skill target ${entryPath}.`, { cause: error });
+      }
+      const parent = path.dirname(existingAncestor);
+      if (parent === existingAncestor) throw error;
+      missingSegments.unshift(path.basename(existingAncestor));
+      existingAncestor = parent;
+    }
+  }
+}
+
+function comparablePath(targetPath: string, platform: NodeJS.Platform): string {
+  const normalized = path.resolve(targetPath);
+  return platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function pathsOverlap(left: string, right: string, platform: NodeJS.Platform): boolean {
+  const normalizedLeft = comparablePath(left, platform);
+  const normalizedRight = comparablePath(right, platform);
   const leftToRight = path.relative(normalizedLeft, normalizedRight);
   const rightToLeft = path.relative(normalizedRight, normalizedLeft);
   return leftToRight === ""
