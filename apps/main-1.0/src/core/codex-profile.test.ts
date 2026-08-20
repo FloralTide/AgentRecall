@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { API_PROVIDER_PRESETS, defaultApiConfig, mergeApiConfigWithProfileDefaults, normalizeApiConfig } from "./api-config";
-import { applyCodexApiConfig, codexProfileForApiConfig, loadActiveCodexSummaryEndpointDefaults, loadCodexConfigSnapshot, loadCodexProfileDefaults, probeCodexModels } from "./codex-profile";
+import { applyCodexApiConfig, codexProfileForApiConfig, loadActiveCodexSummaryEndpointDefaults, loadCodexConfigSnapshot, loadCodexProfileDefaults, probeCodexModels, resolveCodexProviderCredential } from "./codex-profile";
 
 async function withCodexHome<T>(run: (codexHome: string) => Promise<T>): Promise<T> {
   const codexHome = await mkdtemp(path.join(tmpdir(), "agent-recall-codex-"));
+  vi.stubEnv("HOME", codexHome);
+  vi.stubEnv("USERPROFILE", codexHome);
   try {
     return await run(codexHome);
   } finally {
@@ -318,6 +320,106 @@ describe("codex profile switching", () => {
       );
 
       expect(result.models).toEqual(["clawbot:gpt-5.5"]);
+    });
+  });
+
+  it("detects command-backed Codex auth without running the helper during snapshots", async () => {
+    await withCodexHome(async (codexHome) => {
+      await writeFile(
+        path.join(codexHome, "config.toml"),
+        [
+          'model_provider = "gateway"',
+          "",
+          "[model_providers.gateway]",
+          'base_url = "https://api.example/v1"',
+          "",
+          "[model_providers.gateway.auth]",
+          'command = "agent-recall-helper-must-not-run"',
+        ].join("\n"),
+      );
+
+      await expect(loadCodexConfigSnapshot(codexHome)).resolves.toMatchObject({
+        hasApiKey: true,
+        credentialSource: "config.toml gateway.auth.command",
+        activeProvider: {
+          hasApiKey: true,
+          credentialSource: "config.toml gateway.auth.command",
+        },
+      });
+    });
+  });
+
+  it("probes with the bearer token returned by a Codex auth command", async () => {
+    await withCodexHome(async (codexHome) => {
+      await writeFile(path.join(codexHome, "command-token.txt"), "command-key\n");
+      const helperArgs = [
+        "-e",
+        'process.stdout.write(require("node:fs").readFileSync("command-token.txt", "utf8"))',
+      ];
+      await writeFile(
+        path.join(codexHome, "config.toml"),
+        [
+          'model_provider = "gateway"',
+          "",
+          "[model_providers.gateway]",
+          'base_url = "https://api.example/v1"',
+          "",
+          "[model_providers.gateway.auth]",
+          `command = ${JSON.stringify(process.execPath)}`,
+          `args = ${JSON.stringify(helperArgs)}`,
+          `cwd = ${JSON.stringify(codexHome)}`,
+          "timeout_ms = 5000",
+        ].join("\n"),
+      );
+
+      await expect(resolveCodexProviderCredential({
+        codexHome,
+        providerId: "gateway",
+        executeCredentialHelper: true,
+      })).resolves.toEqual({
+        apiKey: "command-key",
+        source: "config.toml gateway.auth.command",
+      });
+
+      const result = await probeCodexModels(
+        { baseUrl: "", apiKey: "", providerId: "gateway", codexHome },
+        async (_url, init) => {
+          expect(init?.headers?.Authorization).toBe("Bearer command-key");
+          return { ok: true, status: 200, async json() { return { data: [{ id: "gateway-model" }] }; } };
+        },
+      );
+
+      expect(result).toMatchObject({
+        models: ["gateway-model"],
+        credentialSource: "config.toml gateway.auth.command",
+      });
+    });
+  });
+
+  it("prefers the configured provider env_key over an unrelated auth.json login", async () => {
+    vi.stubEnv("DMS_API_KEY", "provider-env-key");
+    await withCodexHome(async (codexHome) => {
+      await writeFile(
+        path.join(codexHome, "config.toml"),
+        [
+          'model_provider = "dms"',
+          "",
+          "[model_providers.dms]",
+          'base_url = "https://api.example/v1"',
+          'env_key = "DMS_API_KEY"',
+        ].join("\n"),
+      );
+      await writeFile(path.join(codexHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "official-login-key" }));
+
+      const result = await probeCodexModels(
+        { baseUrl: "", apiKey: "", providerId: "dms", codexHome },
+        async (_url, init) => {
+          expect(init?.headers?.Authorization).toBe("Bearer provider-env-key");
+          return { ok: true, status: 200, async json() { return { data: [{ id: "dms-model" }] }; } };
+        },
+      );
+
+      expect(result.credentialSource).toBe("environment DMS_API_KEY");
     });
   });
 
@@ -746,6 +848,9 @@ describe("loadActiveCodexSummaryEndpointDefaults", () => {
   beforeEach(() => {
     vi.stubEnv("OPENAI_API_KEY", "");
     codexHome = mkdtempSync(path.join(tmpdir(), "codex-profile-test-"));
+    vi.stubEnv("HOME", codexHome);
+    vi.stubEnv("USERPROFILE", codexHome);
+    vi.stubEnv("CODEX_API_KEY", "");
   });
 
   afterEach(() => {

@@ -11,6 +11,8 @@ import { applyClaudeApiConfig, loadClaudeApiConfigDefaults, loadClaudeConfigSnap
 
 async function withClaudeHome<T>(run: (claudeHome: string) => Promise<T>): Promise<T> {
   const claudeHome = await mkdtemp(path.join(tmpdir(), "agent-recall-claude-"));
+  vi.stubEnv("HOME", claudeHome);
+  vi.stubEnv("USERPROFILE", claudeHome);
   try {
     return await run(claudeHome);
   } finally {
@@ -148,6 +150,41 @@ describe("Claude Code provider switching", () => {
       const snapshot = await loadClaudeConfigSnapshot(claudeHome);
       expect(snapshot.exists).toBe(false);
       expect(snapshot.route).toEqual({});
+    });
+  });
+
+  it("detects apiKeyHelper without running its shell command during snapshots", async () => {
+    await withClaudeHome(async (claudeHome) => {
+      await writeFile(
+        path.join(claudeHome, "settings.json"),
+        JSON.stringify({
+          apiKeyHelper: "agent-recall-helper-must-not-run",
+          env: { ANTHROPIC_BASE_URL: "https://api.example.com/anthropic" },
+        }),
+      );
+
+      const snapshot = await loadClaudeConfigSnapshot(claudeHome);
+
+      expect(snapshot.hasApiKey).toBe(true);
+      expect(snapshot.credentialSource).toBe("settings.json apiKeyHelper");
+    });
+  });
+
+  it("does not treat Claude OAuth credentials as a reusable provider API key", async () => {
+    await withClaudeHome(async (claudeHome) => {
+      await writeFile(
+        path.join(claudeHome, "settings.json"),
+        JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://api.example.com/anthropic" } }),
+      );
+      await writeFile(
+        path.join(claudeHome, ".credentials.json"),
+        JSON.stringify({ claudeAiOauth: { accessToken: "synthetic-oauth-token" } }),
+      );
+
+      const snapshot = await loadClaudeConfigSnapshot(claudeHome);
+
+      expect(snapshot.hasApiKey).toBe(false);
+      expect(snapshot.credentialSource).toBeNull();
     });
   });
 
@@ -316,6 +353,37 @@ describe("Claude Code provider switching", () => {
       expect(result).toMatchObject({
         models: ["claude-sonnet-4.6"],
         credentialSource: "settings.json env.ANTHROPIC_API_KEY",
+      });
+    });
+  });
+
+  it("detects models with the auth value returned by apiKeyHelper", async () => {
+    await withClaudeHome(async (claudeHome) => {
+      await writeFile(
+        path.join(claudeHome, "settings.json"),
+        JSON.stringify({ apiKeyHelper: "echo helper-key" }),
+      );
+
+      const result = await probeClaudeModels(
+        {
+          claudeHome,
+          baseUrl: "https://api.example.com/anthropic",
+          apiKey: "",
+          apiFormat: "anthropic",
+          apiKeyField: "ANTHROPIC_API_KEY",
+        },
+        async (_url, init) => {
+          expect(init?.headers).toMatchObject({
+            Authorization: "Bearer helper-key",
+            "x-api-key": "helper-key",
+          });
+          return { ok: true, status: 200, async json() { return { models: ["claude-helper-model"] }; } };
+        },
+      );
+
+      expect(result).toMatchObject({
+        models: ["claude-helper-model"],
+        credentialSource: "settings.json apiKeyHelper",
       });
     });
   });

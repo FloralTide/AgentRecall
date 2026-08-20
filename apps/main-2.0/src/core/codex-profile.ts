@@ -4,6 +4,7 @@ import { API_PROVIDER_PRESETS, normalizeApiConfig, type ApiConfig, type ApiProvi
 import { writeVerifiedConfig } from "./atomic-config-write";
 import { probeProviderModels, type ProviderModelsFetch } from "./provider-models";
 import { prepareProviderConfigDirectory, resolveProviderConfigDirectory } from "./provider-config-path";
+import { runProviderCredentialCommand } from "./provider-credential-helper";
 
 export type CodexProfileName = "codex" | "codexzh";
 export type CodexApplyProfileName = CodexProfileName | "generated";
@@ -49,9 +50,10 @@ export interface CodexConfigSnapshot {
   providers: CodexConfigProviderEntry[];
   /**
    * Credential the active route would actually use, resolved the same way `codex` resolves it:
-   * inline in `config.toml`, then `auth.json`, `.env`, and the environment. The per-provider
-   * entries deliberately refuse to borrow a sibling's key, so an official route — which has no
-   * `[model_providers.*]` section at all — has no other way to report that a key exists.
+   * command-backed auth or inline config, then the provider's environment key and compatible
+   * local stores. The per-provider entries deliberately refuse to borrow a sibling's key, so an
+   * official route — which has no `[model_providers.*]` section at all — has no other way to
+   * report that a key exists.
    */
   credentialSource: string | null;
   hasApiKey: boolean;
@@ -81,6 +83,11 @@ export interface CodexSummaryEndpointDefaults {
 export interface CodexCredentialResolution {
   apiKey: string;
   source: string | null;
+}
+
+interface ResolvedCodexCredential extends CodexCredentialResolution {
+  /** A helper-backed credential can be configured without resolving its secret during snapshots. */
+  configured?: boolean;
 }
 
 const OFFICIAL_CODEX_PROVIDER_ID = "openai";
@@ -133,10 +140,16 @@ export async function loadCodexConfigSnapshot(configuredHome?: string): Promise<
   const activeModel = readTopLevelTomlString(text, "model") || "";
   const providers = await Promise.all(readCodexModelProviders(text).map(async (provider) => {
     // Per-provider display must not borrow a sibling provider's key.
-    const credential = await resolveCodexCredential({ codexHome, configText: text, providerId: provider.id, allowOtherProviders: false });
+    const credential = await resolveCodexCredential({
+      codexHome,
+      configText: text,
+      providerId: provider.id,
+      allowOtherProviders: false,
+      executeCredentialHelper: false,
+    });
     return {
       ...provider,
-      hasApiKey: Boolean(credential.apiKey),
+      hasApiKey: Boolean(credential.apiKey) || credential.configured === true,
       credentialSource: credential.source,
     };
   }));
@@ -149,7 +162,12 @@ export async function loadCodexConfigSnapshot(configuredHome?: string): Promise<
   } catch {
     cachedModels = [];
   }
-  const activeCredential = await resolveCodexCredential({ codexHome, configText: text, providerId: activeProviderId });
+  const activeCredential = await resolveCodexCredential({
+    codexHome,
+    configText: text,
+    providerId: activeProviderId,
+    executeCredentialHelper: false,
+  });
   return {
     codexHome,
     configPath,
@@ -160,7 +178,7 @@ export async function loadCodexConfigSnapshot(configuredHome?: string): Promise<
     activeProvider: providers.find((provider) => provider.id === activeProviderId) ?? null,
     providers,
     credentialSource: activeCredential.source,
-    hasApiKey: Boolean(activeCredential.apiKey),
+    hasApiKey: Boolean(activeCredential.apiKey) || activeCredential.configured === true,
   };
 }
 
@@ -184,6 +202,8 @@ export async function resolveCodexProviderCredential(input: {
   providerId?: string;
   apiKey?: string;
   apiKeySource?: string;
+  /** Opt in only for an operation that may execute the provider's configured auth command. */
+  executeCredentialHelper?: boolean;
 }): Promise<CodexCredentialResolution> {
   const codexHome = resolveProviderConfigDirectory(input.codexHome, ".codex");
   const configText = await readOptionalFile(path.join(codexHome, "config.toml"));
@@ -194,6 +214,7 @@ export async function resolveCodexProviderCredential(input: {
     providerId,
     explicitKey: input.apiKey,
     explicitSource: input.apiKeySource,
+    executeCredentialHelper: input.executeCredentialHelper ?? false,
   });
 }
 
@@ -251,9 +272,21 @@ async function resolveCodexCredential(options: {
   explicitSource?: string;
   /** Set to false when a caller must not borrow another provider's credential. */
   allowOtherProviders?: boolean;
-}): Promise<{ apiKey: string; source: string | null }> {
+  /** Config snapshots detect helper-backed auth without executing provider-owned commands. */
+  executeCredentialHelper?: boolean;
+}): Promise<ResolvedCodexCredential> {
   const explicitKey = options.explicitKey?.trim() ?? "";
   if (explicitKey) return { apiKey: explicitKey, source: options.explicitSource || "API key field" };
+
+  const commandAuth = options.providerId ? readCodexCommandAuth(options.configText, options.providerId) : null;
+  if (commandAuth) {
+    const source = `config.toml ${options.providerId}.auth.command`;
+    if (options.executeCredentialHelper === false) return { apiKey: "", source, configured: true };
+    return {
+      apiKey: await runProviderCredentialCommand(commandAuth),
+      source,
+    };
+  }
 
   const section = options.providerId ? readTomlSection(options.configText, modelProviderSection(options.providerId)) : "";
   const inline = readInlineCodexKey(section);
@@ -282,24 +315,15 @@ async function resolveCodexCredential(options: {
   const configuredEnvKey = options.envKey || readTomlString(section, "env_key") || "";
   const envKeys = [...new Set([configuredEnvKey, OFFICIAL_CODEX_AUTH_ENV_KEY, ...CODEX_FALLBACK_ENV_KEYS].filter(Boolean))];
   const policy = readTomlSection(options.configText, "[shell_environment_policy.set]");
-  for (const key of envKeys) {
-    const value = readTomlString(policy, key);
-    if (value) return { apiKey: value, source: `config.toml shell_environment_policy.set.${key}` };
-  }
-
   const authFile = readCodexAuthKeys(await readOptionalFile(path.join(options.codexHome, "auth.json")));
-  for (const key of envKeys) {
-    if (authFile[key]) return { apiKey: authFile[key], source: `auth.json ${key}` };
-  }
-
   const dotEnv = parseDotEnv(await readOptionalFile(path.join(options.codexHome, ".env")));
-  for (const key of envKeys) {
-    if (dotEnv[key]) return { apiKey: dotEnv[key], source: `.env ${key}` };
-  }
-
   for (const key of envKeys) {
     const value = process.env[key]?.trim();
     if (value) return { apiKey: value, source: `environment ${key}` };
+    const configured = readTomlString(policy, key);
+    if (configured) return { apiKey: configured, source: `config.toml shell_environment_policy.set.${key}` };
+    if (authFile[key]) return { apiKey: authFile[key], source: `auth.json ${key}` };
+    if (dotEnv[key]) return { apiKey: dotEnv[key], source: `.env ${key}` };
   }
 
   if (options.allowOtherProviders === false) return { apiKey: "", source: null };
@@ -315,7 +339,8 @@ async function borrowCodexCredentialFromOtherProviders(options: {
   codexHome: string;
   configText: string;
   providerId?: string;
-}): Promise<{ apiKey: string; source: string | null }> {
+  executeCredentialHelper?: boolean;
+}): Promise<ResolvedCodexCredential> {
   const activeProviderId = readTopLevelTomlString(options.configText, "model_provider") || "";
   const candidates = [
     ...(activeProviderId && activeProviderId !== options.providerId ? [activeProviderId] : []),
@@ -329,6 +354,7 @@ async function borrowCodexCredentialFromOtherProviders(options: {
       configText: options.configText,
       providerId: candidate,
       allowOtherProviders: false,
+      executeCredentialHelper: options.executeCredentialHelper,
     });
     if (credential.apiKey) return { apiKey: credential.apiKey, source: `${credential.source} (provider ${candidate})` };
   }
@@ -491,6 +517,8 @@ async function applyGeneratedCodexProvider(options: {
     configText: activeConfigText,
     providerId,
     explicitKey: apiConfig.customApiKey,
+    // Applying a route must never turn a short-lived helper token into a persisted API key.
+    executeCredentialHelper: false,
   });
   if (!credential.apiKey) throw new Error(`No API key was found for ${apiConfig.customProviderName}.`);
   const effectiveConfig = { ...apiConfig, customApiKey: credential.apiKey };
@@ -682,6 +710,24 @@ function modelProviderSection(providerId: string): string {
     : `[model_providers.${tomlString(providerId)}]`;
 }
 
+function readCodexCommandAuth(text: string, providerId: string): {
+  command: string;
+  args: string[];
+  timeoutMs?: number;
+  cwd?: string;
+} | null {
+  const parentSection = modelProviderSection(providerId);
+  const authSection = readTomlSection(text, `${parentSection.slice(0, -1)}.auth]`);
+  const command = readTomlString(authSection, "command");
+  if (!command) return null;
+  return {
+    command,
+    args: readTomlStringArray(authSection, "args") ?? [],
+    timeoutMs: readTomlNumber(authSection, "timeout_ms") ?? undefined,
+    cwd: readTomlString(authSection, "cwd") ?? undefined,
+  };
+}
+
 function replaceTopLevelString(text: string, key: string, value: string): string {
   const line = `${key} = ${tomlString(value)}`;
   const pattern = new RegExp(`^${escapeRegExp(key)}\\s*=.*$`, "m");
@@ -766,6 +812,23 @@ function readTomlString(text: string, key: string): string | null {
   const rawValue = text.match(pattern)?.[1];
   if (!rawValue) return null;
   return parseTomlString(rawValue);
+}
+
+function readTomlStringArray(text: string, key: string): string[] | null {
+  const pattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=\\s*\\[([\\s\\S]*?)\\]`, "m");
+  const body = text.match(pattern)?.[1];
+  if (body === undefined) return null;
+  return splitTomlCommaList(body)
+    .map((item) => parseTomlString(item))
+    .filter((item): item is string => item !== null);
+}
+
+function readTomlNumber(text: string, key: string): number | null {
+  const pattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=\\s*(\\d+)\\s*$`, "m");
+  const value = text.match(pattern)?.[1];
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function readTomlInlineTable(text: string, key: string): Record<string, string> {
