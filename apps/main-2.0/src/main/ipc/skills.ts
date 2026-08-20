@@ -1,6 +1,6 @@
 import type { DeleteInstalledSkillResult, InstalledSkillsSnapshot } from "../../core/skill-manager";
 import type { SkillAiSearchResult } from "../../core/skill-ai-search";
-import type { ManagedSkill, ManagedSkillImportResult, SkillInstallTarget } from "../../core/managed-skill-library";
+import type { ManagedSkillImportResult, ManagedSkillTargetUpdateResult, SkillInstallTarget } from "../../core/managed-skill-library";
 import type { SkillsShDetail, SkillsShPage } from "../../core/skills-sh";
 import type { SkillDiffSnapshot } from "../../core/skill-diff";
 import type { RemoteSkill, SkillSyncBatchResult, SkillSyncInstallResult, SkillSyncSnapshot, SkillSyncUploadOutcome } from "../../core/skill-sync";
@@ -19,7 +19,7 @@ export interface SkillsIpcService {
     managedId: string,
     targets: SkillInstallTarget[],
     forceTargets?: SkillInstallTarget[],
-  ): ManagedSkill;
+  ): ManagedSkillTargetUpdateResult;
   listDiscoveredSkills(input: { page: number; query: string }): Promise<SkillsShPage>;
   aiSearchDiscoveredSkills(input: { query: string; language: "en" | "zh" }): Promise<SkillAiSearchResult>;
   getDiscoveredSkill(id: string): Promise<SkillsShDetail>;

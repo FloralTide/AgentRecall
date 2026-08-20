@@ -264,6 +264,23 @@ describe("ManagedSkillLibrary conflicting installation targets", () => {
     expect(fs.readdirSync(sharedSkillsParent)).toEqual([]);
   });
 
+  it("deletes a managed Skill with installed aliases without unlinking the shared entry twice", () => {
+    const fixture = createManagedSkillFixture();
+    const { sharedTargetPath } = aliasCodexAndSharedSkillParents(fixture);
+    fs.symlinkSync(
+      fixture.managedSkillPath,
+      sharedTargetPath,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    const deleted = fixture.library.delete(fixture.managedId);
+
+    expect(deleted.skillName).toBe(fixture.managedId);
+    expect(fs.existsSync(sharedTargetPath)).toBe(false);
+    expect(fs.existsSync(fixture.managedSkillPath)).toBe(false);
+    expect(fixture.library.list().skills).toEqual([]);
+  });
+
   it("creates one shared physical link when every alias is selected", () => {
     const fixture = createManagedSkillFixture();
     const { sharedTargetPath } = aliasCodexAndSharedSkillParents(fixture);
@@ -618,6 +635,9 @@ describe("ManagedSkillLibrary conflicting installation targets", () => {
     }
 
     expect(updated.installations.find((item) => item.target === "codex")?.state).toBe("installed");
+    expect(updated.retainedBackupPaths).toHaveLength(1);
+    expect(updated.retainedBackupPaths[0]).toContain(".agent-recall-backup-");
+    expect(fs.lstatSync(updated.retainedBackupPaths[0]).isDirectory()).toBe(true);
     expect(fs.lstatSync(targetPath).isSymbolicLink()).toBe(true);
     expect(fs.readdirSync(path.dirname(targetPath)).some((entry) =>
       entry.includes(".agent-recall-backup-"))).toBe(true);

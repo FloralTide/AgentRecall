@@ -205,6 +205,11 @@
   color: var(--success-text);
 }
 
+.managed-skills-feedback.warning {
+  background: color-mix(in srgb, var(--warning, #b7791f) 12%, var(--panel-bg));
+  color: var(--warning, #b7791f);
+}
+
 .managed-skills-batch-bar {
   min-height: 38px;
   flex: 0 0 auto;

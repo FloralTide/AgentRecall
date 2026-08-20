@@ -14,10 +14,10 @@ import type {
 import { runSkillAiSearch, type SkillAiSearchResult } from "../../core/skill-ai-search";
 import {
   ManagedSkillLibrary,
-  type ManagedSkill,
   type ManagedSkillFileImport,
   type ManagedSkillImportResult,
   type ManagedSkillsSnapshot,
+  type ManagedSkillTargetUpdateResult,
   type SkillInstallTarget,
 } from "../../core/managed-skill-library";
 import {
@@ -215,7 +215,7 @@ export interface ManagedSkillLibraryPort {
     managedId: string,
     targets: SkillInstallTarget[],
     forceTargets?: SkillInstallTarget[],
-  ): ManagedSkill;
+  ): ManagedSkillTargetUpdateResult;
   delete(managedId: string): DeleteInstalledSkillResult;
 }
 
@@ -379,7 +379,7 @@ export class SkillService {
     managedId: string,
     targets: SkillInstallTarget[],
     forceTargets: SkillInstallTarget[] = [],
-  ): ManagedSkill {
+  ): ManagedSkillTargetUpdateResult {
     if (!this.managedLibrary) throw new Error("The managed Skill library is unavailable.");
     return this.managedLibrary.updateTargets(managedId, targets, forceTargets);
   }

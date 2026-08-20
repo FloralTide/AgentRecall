@@ -35,6 +35,10 @@ export interface ManagedSkill extends InstalledSkill {
   installations: ManagedSkillInstallation[];
 }
 
+export interface ManagedSkillTargetUpdateResult extends ManagedSkill {
+  retainedBackupPaths: string[];
+}
+
 export interface ManagedSkillsSnapshot extends Omit<InstalledSkillsSnapshot, "skills"> {
   skills: ManagedSkill[];
 }
@@ -245,7 +249,7 @@ export class ManagedSkillLibrary {
     managedId: string,
     targets: SkillInstallTarget[],
     forceTargets: SkillInstallTarget[] = [],
-  ): ManagedSkill {
+  ): ManagedSkillTargetUpdateResult {
     const skill = this.requireManagedSkill(managedId);
     const requestedTargets = new Set(targets);
     const requestedForceTargets = new Set(forceTargets);
@@ -408,6 +412,7 @@ export class ManagedSkillLibrary {
       throw error;
     }
 
+    const retainedBackupPaths: string[] = [];
     for (const staged of stagedPaths) {
       try {
         const stat = fs.lstatSync(staged.backupPath);
@@ -418,26 +423,44 @@ export class ManagedSkillLibrary {
         }
       } catch {
         // The target update has committed. A cleanup failure must not roll
-        // back or report failure after the requested visible state was reached;
-        // leave the uniquely named hidden backup for later manual cleanup.
+        // back after the requested visible state was reached. Report a backup
+        // that still exists so the renderer can tell the user where it remains.
+        try {
+          fs.lstatSync(staged.backupPath);
+          retainedBackupPaths.push(staged.backupPath);
+        } catch (error) {
+          if (!isMissingPathError(error)) retainedBackupPaths.push(staged.backupPath);
+        }
       }
     }
-    return this.requireManagedSkill(managedId);
+    return {
+      ...this.requireManagedSkill(managedId),
+      retainedBackupPaths,
+    };
   }
 
   delete(managedId: string): DeleteInstalledSkillResult {
     const normalizedId = safeManagedSkillId(managedId);
     if (normalizedId !== managedId) throw new Error("Unsafe managed Skill id.");
     const skill = this.requireManagedSkill(normalizedId);
+    const ownedInstallations = new Map<string, ManagedSkillInstallation>();
     for (const installation of skill.installations) {
       if (installation.state !== "installed") continue;
       const verified = this.inspectInstallation(normalizedId, installation.target);
       if (verified.state !== "installed") {
         throw new Error(`Refusing to remove a ${installation.target} Skill link that is no longer owned by AgentRecall.`);
       }
+      const physicalPath = comparablePath(physicalEntryPath(installation.path), this.platform);
+      if (!ownedInstallations.has(physicalPath)) ownedInstallations.set(physicalPath, installation);
     }
-    for (const installation of skill.installations) {
-      if (installation.state === "installed") fs.unlinkSync(installation.path);
+    for (const [physicalPath, installation] of ownedInstallations) {
+      if (
+        comparablePath(physicalEntryPath(installation.path), this.platform) !== physicalPath
+        || this.inspectInstallation(normalizedId, installation.target).state !== "installed"
+      ) {
+        throw new Error(`Refusing to remove a ${installation.target} Skill link that changed during deletion.`);
+      }
+      fs.unlinkSync(installation.path);
     }
     fs.rmSync(skill.directoryPath, { recursive: true, force: false });
     fs.rmSync(this.metadataPath(normalizedId), { force: true });
