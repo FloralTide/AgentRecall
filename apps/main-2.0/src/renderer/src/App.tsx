@@ -22,6 +22,7 @@ import type { RemoteHealthReport } from "../../core/remote-health";
 import { isLocalSessionEnvironment } from "../../core/session-environment";
 import type { SessionSyncHookStatus } from "../../core/session-sync-queue";
 import type { V1ImportResult } from "../../core/v1-import";
+import type { WorkflowWorkbenchSnapshot } from "../../shared/ipc/automation";
 import {
   isSessionDeleteConfirmationRequiredMessage,
   isSessionDeleteLiveCheckConfirmationRequiredMessage,
@@ -96,7 +97,7 @@ import { WslEnvironmentDialog } from "./features/settings/wsl-environment-dialog
 import { WorkbenchPage } from "./features/workbench/workbench-page";
 import { useWorkbenchOverview } from "./features/workbench/use-workbench-overview";
 import { useAutomation } from "./features/automation/automation-provider";
-import { selectWorkbenchWorkflows, selectWorkbenchWorkflowSummaries } from "./features/automation/workbench-workflows";
+import type { WorkflowInitialRequest } from "./features/automation/workflow-feature-page";
 import {
   canMigrateSession,
   isSidebarProjectVisible,
@@ -204,17 +205,9 @@ export function App(): ReactElement {
       return false;
     }
   }, [activePage]);
-  const workbenchWorkflows = useMemo(
-    () => automation.detailsLoaded
-      ? selectWorkbenchWorkflows(automation.snapshot.workflowStore.workflows, automation.snapshot.workflowStore.runs)
-      : selectWorkbenchWorkflowSummaries(automation.workflowSidebar.workflows),
-    [
-      automation.detailsLoaded,
-      automation.snapshot.workflowStore.runs,
-      automation.snapshot.workflowStore.workflows,
-      automation.workflowSidebar.workflows,
-    ],
-  );
+  const [workbenchWorkflowSnapshot, setWorkbenchWorkflowSnapshot] = useState<WorkflowWorkbenchSnapshot | null>(null);
+  const [workbenchWorkflowError, setWorkbenchWorkflowError] = useState<string | null>(null);
+  const [workflowInitialRequest, setWorkflowInitialRequest] = useState<WorkflowInitialRequest>();
   const [workbenchMcpServers, setWorkbenchMcpServers] = useState<McpServerDefinition[] | null>(null);
   const [workbenchChatRooms, setWorkbenchChatRooms] = useState<TeamChatRoomSummary[] | null>(null);
   const [workbenchMemorySnapshot, setWorkbenchMemorySnapshot] = useState<OpenVikingMemorySnapshot | null>(null);
@@ -230,7 +223,20 @@ export function App(): ReactElement {
     setWorkbenchMemorySnapshot(null);
     setWorkbenchMemoryLoading(true);
     setWorkbenchSkills(null);
+    setWorkbenchWorkflowSnapshot(null);
+    setWorkbenchWorkflowError(null);
     const tasks: Array<() => Promise<void>> = [
+      async () => {
+        try {
+          const snapshot = await automation.api.getWorkflowWorkbench();
+          if (active) setWorkbenchWorkflowSnapshot(snapshot);
+        } catch (error) {
+          if (active) {
+            setWorkbenchWorkflowSnapshot({ workflows: [], totalCount: 0, activeCount: 0 });
+            setWorkbenchWorkflowError(error instanceof Error ? error.message : String(error));
+          }
+        }
+      },
       async () => {
         try {
           const servers = await automation.api.listMcpServers();
@@ -1785,22 +1791,30 @@ export function App(): ReactElement {
                 setCustomDateRange({ dayStart: day.dayStart, dayEndExclusive: day.dayEndExclusive });
                 setActivePage("sessions");
               }}
-              workflows={workbenchWorkflows}
-              workflowsLoading={automation.detailsLoaded ? automation.loading : automation.workflowSidebarLoading}
-              workflowsError={automation.error}
+              workflows={workbenchWorkflowSnapshot?.workflows ?? []}
+              workflowTotalCount={workbenchWorkflowSnapshot?.totalCount ?? 0}
+              activeWorkflowCount={workbenchWorkflowSnapshot?.activeCount ?? 0}
+              workflowsLoading={workbenchWorkflowSnapshot === null}
+              workflowsError={workbenchWorkflowError}
               onOpenWorkflow={(workflowId) => {
-                void automation.api.selectWorkflow(workflowId).then((next) => {
-                  automation.setSnapshot(next);
-                  setActivePage("workflows");
-                }).catch((error) => setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) }));
+                setWorkflowInitialRequest({ workflowId });
+                void navigateToPage("workflows");
               }}
               onNewWorkflow={() => {
-                void automation.api.createWorkflowDraft().then((next) => {
-                  automation.setSnapshot(next);
-                  setActivePage("workflows");
-                }).catch((error) => setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) }));
+                void automation.ensureDetailsLoaded().then(() => {
+                  setWorkflowInitialRequest({ createNew: true });
+                  void navigateToPage("workflows");
+                }).catch((error) => {
+                  setActionStatus({
+                    kind: "error",
+                    message: error instanceof Error ? error.message : String(error),
+                  });
+                });
               }}
-              onShowWorkflows={() => void navigateToPage("workflows")}
+              onShowWorkflows={() => {
+                setWorkflowInitialRequest(undefined);
+                void navigateToPage("workflows");
+              }}
               runtimes={automation.detailsLoaded ? automation.snapshot.runtimes : []}
               runtimeChannels={automation.detailsLoaded ? automation.snapshot.channels : []}
               runtimeOverviewAvailable={automation.detailsLoaded}
@@ -1970,6 +1984,8 @@ export function App(): ReactElement {
               language={language}
               globalReviewEnabled={Boolean(appSettings?.workflowGlobalReviewEnabled)}
               runtimeReviewEnabled={Boolean(appSettings?.workflowRuntimeReviewEnabled)}
+              initialRequest={workflowInitialRequest}
+              onInitialRequestConsumed={() => setWorkflowInitialRequest(undefined)}
             /> : null}
 
             {activePage === "team-chat" ? (

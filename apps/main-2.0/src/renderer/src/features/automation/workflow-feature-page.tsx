@@ -23,6 +23,10 @@ import { reduceWorkflowRunStream, workflowRunStreamKey, type WorkflowRunStreamSt
 
 type EditorMode = "definition" | "run";
 
+export type WorkflowInitialRequest =
+  | { workflowId: string }
+  | { createNew: true };
+
 const valueTypes: WorkflowValueType[] = ["text", "number", "boolean", "file", "object", "list"];
 const scriptPermissions: WorkflowScriptPermission[] = ["workspace_read", "workspace_write", "workspace_delete", "network", "process"];
 const nodeKinds: Array<{ kind: WorkflowNodeKind; label: string; icon: typeof Bot }> = [
@@ -299,7 +303,17 @@ function RunInspector({ run, selectedNodeId, liveOutput, onRetry, onApprove }: {
   </div>;
 }
 
-export function WorkflowFeaturePage({ language }: { language: LanguageMode; globalReviewEnabled: boolean; runtimeReviewEnabled: boolean }): ReactElement {
+export function WorkflowFeaturePage({
+  language,
+  initialRequest,
+  onInitialRequestConsumed,
+}: {
+  language: LanguageMode;
+  globalReviewEnabled: boolean;
+  runtimeReviewEnabled: boolean;
+  initialRequest?: WorkflowInitialRequest;
+  onInitialRequestConsumed?: () => void;
+}): ReactElement {
   const api = useMemo(() => agentRecallAutomationService(), []);
   const automation = useAutomationStoreSnapshot();
   const agents = automation.configuredAgents.map((agent) => ({ id: agent.id, name: agent.name }));
@@ -324,13 +338,41 @@ export function WorkflowFeaturePage({ language }: { language: LanguageMode; glob
     const snapshot = await api.getWorkflowCore(preferId);
     setDefinitions(snapshot.definitions);
     setRuns(snapshot.runs);
-    const nextId = preferId ?? (snapshot.definitions.some((item) => item.id === selectedId) ? selectedId : undefined) ?? snapshot.definitions.find((item) => !item.isTemplate)?.id ?? snapshot.definitions[0]?.id;
+    const preferredId = preferId && snapshot.definitions.some((item) => item.id === preferId)
+      ? preferId
+      : undefined;
+    const nextId = preferredId
+      ?? (snapshot.definitions.some((item) => item.id === selectedId) ? selectedId : undefined)
+      ?? snapshot.definitions.find((item) => !item.isTemplate)?.id
+      ?? snapshot.definitions[0]?.id;
     setSelectedId(nextId);
     const next = snapshot.definitions.find((item) => item.id === nextId);
     if (next) setDraft(structuredClone(next));
   }, [api, selectedId]);
 
-  useEffect(() => { void load().catch((cause) => setError(cause instanceof Error ? cause.message : String(cause))); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const createNewWorkflow = (): void => {
+    const next = createWorkflowDefinition(agents[0]?.id ?? "");
+    setNewDraftIds((current) => new Set(current).add(next.id));
+    setDefinitions((current) => [next, ...current]);
+    setDraft(next);
+    setSelectedId(next.id);
+    setSelectedNodeId(undefined);
+    setDefinitionInspectorOpen(false);
+    setMode("definition");
+  };
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        await load(initialRequest && "workflowId" in initialRequest ? initialRequest.workflowId : undefined);
+        if (initialRequest && "createNew" in initialRequest) createNewWorkflow();
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        if (initialRequest) onInitialRequestConsumed?.();
+      }
+    })();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => api.onWorkflowRunStream((event) => {
     setRunStreams((current) => reduceWorkflowRunStream(current, event));
   }), [api]);
@@ -463,7 +505,7 @@ export function WorkflowFeaturePage({ language }: { language: LanguageMode; glob
   return <div className="automation-page automation-workflow-page workflow-core-page" data-page="workflows">
     <header className="app-page-head automation-page-head"><div><h2>Workflow</h2><p>{localize(language, "Build dependable automations from explicit inputs, nodes, and described outputs.", "用明确的输入、节点和带描述的输出构建可靠自动化。")}</p></div></header>
     <div className="workflow-core-shell">
-      <aside className="workflow-core-list"><header><strong>Workflows</strong><button type="button" className="icon-btn" aria-label="New Workflow" onClick={() => { const next = createWorkflowDefinition(agents[0]?.id ?? ""); setNewDraftIds((current) => new Set(current).add(next.id)); setDefinitions((current) => [next, ...current]); setDraft(next); setSelectedId(next.id); setSelectedNodeId(undefined); setDefinitionInspectorOpen(false); setMode("definition"); }}><Plus size={16} /></button></header>
+      <aside className="workflow-core-list"><header><strong>Workflows</strong><button type="button" className="icon-btn" aria-label="New Workflow" onClick={createNewWorkflow}><Plus size={16} /></button></header>
         <div>{templates.length > 0 ? <section className="workflow-core-list-group is-template"><header><span><LayoutTemplate size={11} /> 模板</span><small>{templates.length}</small></header>{templates.map((definition) => <button type="button" key={definition.id} className={definition.id === selectedId ? "is-active" : ""} onClick={() => selectDefinition(definition)}><strong>{definition.name}</strong><span>预览</span><small>{definition.description}</small></button>)}</section> : null}<section className="workflow-core-list-group"><header><span><UserRound size={11} /> 我的 Workflow</span><small>{personalDefinitions.length}</small></header>{personalDefinitions.length > 0 ? personalDefinitions.map((definition) => <button type="button" key={definition.id} className={definition.id === selectedId ? "is-active" : ""} onClick={() => selectDefinition(definition)} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const position = { definitionId: definition.id, x: event.clientX, y: event.clientY }; setPersonalMenu(position); void api.getWorkflowCore(definition.id).then((snapshot) => { const hasActiveRun = snapshot.runs.some((run) => run.status === "running" || run.status === "paused" || run.status === "waiting"); setPersonalMenu((current) => current?.definitionId === definition.id ? { ...current, hasActiveRun } : current); }).catch(() => { setPersonalMenu((current) => current?.definitionId === definition.id ? { ...current, hasActiveRun: true } : current); }); }}><strong>{definition.name}</strong><span>{definition.nodes.length} nodes</span><small>{definition.description}</small></button>) : <p>还没有自己的 Workflow</p>}</section></div>
       </aside>
       {personalMenu && menuDefinition ? <div className="agent-context-menu workflow-core-context-menu" style={{ left: personalMenu.x, top: personalMenu.y }} onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
