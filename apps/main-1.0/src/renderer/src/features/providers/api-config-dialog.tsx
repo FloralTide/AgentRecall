@@ -19,6 +19,15 @@ import type { SummaryProviderConnectionRequest } from "../../../../shared/ipc/pr
 import type { SettingsFeedback } from "../../app-types";
 import { localize, type LanguageMode } from "../../language";
 
+type ProviderConnectionRequest =
+  | { target: "codex"; apiConfig: ApiConfig }
+  | { target: "claude"; apiConfig: ClaudeApiConfig };
+
+interface ProviderConnectionResult {
+  elapsedMs: number;
+  credentialSource: string;
+}
+
 // The summary route is a plain OpenAI-compatible route just like the Codex one, so it
 // offers the same presets; only the stored credential differs.
 const SUMMARY_API_PROVIDER_PRESETS = API_PROVIDER_PRESETS;
@@ -89,9 +98,11 @@ export function ApiConfigDialog({
   const [codexModelOptions, setCodexModelOptions] = useState<string[]>([]);
   const [codexModelMenuOpen, setCodexModelMenuOpen] = useState(false);
   const [codexModelProbeStatus, setCodexModelProbeStatus] = useState<SettingsFeedback>(null);
+  const [codexConnectionStatus, setCodexConnectionStatus] = useState<SettingsFeedback>(null);
   const [claudeModelOptions, setClaudeModelOptions] = useState<string[]>([]);
   const [claudeModelMenuOpen, setClaudeModelMenuOpen] = useState(false);
   const [claudeModelProbeStatus, setClaudeModelProbeStatus] = useState<SettingsFeedback>(null);
+  const [claudeConnectionStatus, setClaudeConnectionStatus] = useState<SettingsFeedback>(null);
   const [summaryModelOptions, setSummaryModelOptions] = useState<string[]>([]);
   const [summaryModelMenuOpen, setSummaryModelMenuOpen] = useState(false);
   const [summaryModelProbeStatus, setSummaryModelProbeStatus] = useState<SettingsFeedback>(null);
@@ -106,8 +117,19 @@ export function ApiConfigDialog({
   const summaryApiPresetSelectionRef = useRef(0);
   const codexConfigHydrationRef = useRef("");
   const claudeConfigHydrationRef = useRef("");
+  const codexConnectionTestIdRef = useRef(0);
+  const claudeConnectionTestIdRef = useRef(0);
   const updateDraftApiConfig = (next: Partial<ApiConfig>) => setDraftApiConfig((current) => ({ ...current, ...next }));
   const updateDraftClaudeApiConfig = (next: Partial<ClaudeApiConfig>) => setDraftClaudeApiConfig((current) => ({ ...current, ...next }));
+  const codexConnectionSignature = JSON.stringify(draftApiConfig);
+  const claudeConnectionSignature = JSON.stringify(draftClaudeApiConfig);
+  const codexConnectionSignatureRef = useRef(codexConnectionSignature);
+  const claudeConnectionSignatureRef = useRef(claudeConnectionSignature);
+  codexConnectionSignatureRef.current = codexConnectionSignature;
+  claudeConnectionSignatureRef.current = claudeConnectionSignature;
+  const providerConnectionApi = window.sessionSearch as typeof window.sessionSearch & {
+    testProviderConnection(input: ProviderConnectionRequest): Promise<ProviderConnectionResult>;
+  };
   const updateDraftSummaryApiConfig = (next: Partial<ApiConfig>) => setDraftSummaryApiConfig((current) => ({ ...current, ...next }));
   const selectedPreset = API_PROVIDER_PRESETS.find((preset) => preset.id === draftApiConfig.customProviderId);
   const customName = selectedPreset?.label ?? (draftApiConfig.customProviderName || "Custom");
@@ -329,6 +351,64 @@ export function ApiConfigDialog({
       });
     } catch (error) {
       setClaudeModelProbeStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  const testCodexConnection = async () => {
+    const testId = ++codexConnectionTestIdRef.current;
+    const testedSignature = codexConnectionSignature;
+    setCodexConnectionStatus({ kind: "running", message: l("Testing Codex connection...", "正在测试 Codex 连接...") });
+    try {
+      const result = await providerConnectionApi.testProviderConnection({
+        target: "codex",
+        apiConfig: { ...draftApiConfig },
+      });
+      if (
+        testId !== codexConnectionTestIdRef.current
+        || testedSignature !== codexConnectionSignatureRef.current
+      ) return;
+      setCodexConnectionStatus({
+        kind: "success",
+        message: l(
+          `Codex connection succeeded in ${result.elapsedMs} ms using ${result.credentialSource}.`,
+          `Codex 连接成功，使用 ${result.credentialSource}，耗时 ${result.elapsedMs} 毫秒。`,
+        ),
+      });
+    } catch (error) {
+      if (
+        testId !== codexConnectionTestIdRef.current
+        || testedSignature !== codexConnectionSignatureRef.current
+      ) return;
+      setCodexConnectionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  const testClaudeConnection = async () => {
+    const testId = ++claudeConnectionTestIdRef.current;
+    const testedSignature = claudeConnectionSignature;
+    setClaudeConnectionStatus({ kind: "running", message: l("Testing Claude Code connection...", "正在测试 Claude Code 连接...") });
+    try {
+      const result = await providerConnectionApi.testProviderConnection({
+        target: "claude",
+        apiConfig: { ...draftClaudeApiConfig },
+      });
+      if (
+        testId !== claudeConnectionTestIdRef.current
+        || testedSignature !== claudeConnectionSignatureRef.current
+      ) return;
+      setClaudeConnectionStatus({
+        kind: "success",
+        message: l(
+          `Claude Code connection succeeded in ${result.elapsedMs} ms using ${result.credentialSource}.`,
+          `Claude Code 连接成功，使用 ${result.credentialSource}，耗时 ${result.elapsedMs} 毫秒。`,
+        ),
+      });
+    } catch (error) {
+      if (
+        testId !== claudeConnectionTestIdRef.current
+        || testedSignature !== claudeConnectionSignatureRef.current
+      ) return;
+      setClaudeConnectionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     }
   };
 
@@ -784,7 +864,6 @@ export function ApiConfigDialog({
     settings?.summarySource,
     settings?.summaryReasoningEffort,
   ]);
-
   useEffect(() => {
     setDraftApiConfig(settings?.apiConfig ?? { ...defaultApiConfig });
     setDraftClaudeApiConfig(settings?.claudeApiConfig ?? { ...defaultClaudeApiConfig });
@@ -798,6 +877,16 @@ export function ApiConfigDialog({
     setDraftSummaryReasoningEffort(settings?.summaryReasoningEffort ?? "medium");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsSignature]);
+
+  useEffect(() => {
+    codexConnectionTestIdRef.current += 1;
+    setCodexConnectionStatus(null);
+  }, [codexConnectionSignature]);
+
+  useEffect(() => {
+    claudeConnectionTestIdRef.current += 1;
+    setClaudeConnectionStatus(null);
+  }, [claudeConnectionSignature]);
 
   useEffect(() => {
     // Re-read whenever the directory changes, otherwise the pane keeps showing the config
@@ -1752,9 +1841,38 @@ export function ApiConfigDialog({
           )}
         </div>
         <div className="dialog-actions api-config-actions">
-          <span className={`api-config-status ${feedback?.kind ?? ""}`} aria-live="polite">
-            {feedback?.message ?? ""}
-          </span>
+          <div className="api-config-feedback" aria-live="polite">
+            {feedback ? <span className={`api-config-status ${feedback.kind}`}>{feedback.message}</span> : null}
+            {apiTarget === "codex" && codexConnectionStatus ? (
+              <span className={`api-config-status ${codexConnectionStatus.kind}`}>{codexConnectionStatus.message}</span>
+            ) : null}
+            {apiTarget === "claude" && claudeConnectionStatus ? (
+              <span className={`api-config-status ${claudeConnectionStatus.kind}`}>{claudeConnectionStatus.message}</span>
+            ) : null}
+          </div>
+          {apiTarget === "codex" ? (
+            <button
+              type="button"
+              data-provider-connection-test="codex"
+              disabled={!settings || saving || codexConnectionStatus?.kind === "running"}
+              onClick={() => void testCodexConnection()}
+            >
+              {codexConnectionStatus?.kind === "running"
+                ? l("Testing connection...", "正在测试连接...")
+                : l("Test connection", "测试连接")}
+            </button>
+          ) : apiTarget === "claude" ? (
+            <button
+              type="button"
+              data-provider-connection-test="claude"
+              disabled={!settings || saving || claudeConnectionStatus?.kind === "running"}
+              onClick={() => void testClaudeConnection()}
+            >
+              {claudeConnectionStatus?.kind === "running"
+                ? l("Testing connection...", "正在测试连接...")
+                : l("Test connection", "测试连接")}
+            </button>
+          ) : null}
           <button type="button" className={apiTarget === "summary" ? "primary-action" : ""} disabled={!settings || saving} onClick={saveDraft}>
             {apiTarget === "summary"
               ? l("Save summary settings", "保存摘要设置")

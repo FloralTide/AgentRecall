@@ -6850,6 +6850,17 @@ select:focus-visible {
   box-shadow: 0 1px 2px var(--accent-ring, rgba(0, 0, 0, 0.12));
 }
 
+.api-config-feedback {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  margin-right: auto;
+}
+
+.api-config-feedback .api-config-status {
+  margin-right: 0;
+}
+
 /* Save status sits on the left where Cancel used to be; the dialog closes via the top-right ✕. */
 .api-config-status {
   margin-right: auto;
