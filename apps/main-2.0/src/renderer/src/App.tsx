@@ -189,6 +189,10 @@ export function App(): ReactElement {
   const skills = useSkillsController(language);
   const remoteSessions = useRemoteSessionsCache();
   const [activePage, setActivePage] = useState<AppPage>("workbench");
+  const pageNavigationVersionRef = useRef(0);
+  useLayoutEffect(() => {
+    pageNavigationVersionRef.current += 1;
+  }, [activePage]);
   const pageNavigationGuardRef = useRef<(() => Promise<boolean>) | null>(null);
   const setPageNavigationGuard = useCallback((guard: (() => Promise<boolean>) | null): void => {
     pageNavigationGuardRef.current = guard;
@@ -386,11 +390,15 @@ export function App(): ReactElement {
   const [bulkDeleteBusy, setBulkDeleteBusy] = useState(false);
   const [actionStatus, setActionStatus] = useState<ActionStatus | null>(null);
   const openWorkflows = useCallback(async (initialRequest?: WorkflowInitialRequest): Promise<void> => {
+    const navigationVersion = pageNavigationVersionRef.current;
+    setWorkflowInitialRequest(undefined);
     try {
       await automation.ensureDetailsLoaded();
+      if (pageNavigationVersionRef.current !== navigationVersion) return;
       setWorkflowInitialRequest(initialRequest);
-      await navigateToPage("workflows");
+      if (!(await navigateToPage("workflows"))) setWorkflowInitialRequest(undefined);
     } catch (error) {
+      if (pageNavigationVersionRef.current !== navigationVersion) return;
       setActionStatus({
         kind: "error",
         message: error instanceof Error ? error.message : String(error),

@@ -432,6 +432,35 @@ describe("App workflow workbench wiring", () => {
     expect(harness.setSnapshot).not.toHaveBeenCalled();
   });
 
+  it("drops a pending new-workflow request when the user navigates away during detail loading", async () => {
+    let finishLoadingDetails: (() => void) | undefined;
+    const detailsLoaded = new Promise<undefined>((resolve) => {
+      finishLoadingDetails = () => resolve(undefined);
+    });
+    harness.ensureDetailsLoaded.mockReturnValue(detailsLoaded);
+    await renderApp();
+    await waitForApp(() => expect(harness.getWorkflowWorkbench).toHaveBeenCalledTimes(1));
+
+    await act(async () => latestWorkbenchProps().onNewWorkflow());
+    await waitForApp(() => expect(harness.ensureDetailsLoaded).toHaveBeenCalledTimes(1));
+
+    await act(async () => latestNavigationProps().onNavigate("workflows"));
+    await waitForApp(() => expect(latestNavigationProps().activePage).toBe("workflows"));
+    expect(latestWorkflowFeatureProps().initialRequest).toBeUndefined();
+
+    await act(async () => {
+      finishLoadingDetails?.();
+      await detailsLoaded;
+    });
+    await act(async () => latestNavigationProps().onNavigate("workbench"));
+    await waitForApp(() => expect(latestNavigationProps().activePage).toBe("workbench"));
+    await act(async () => latestNavigationProps().onNavigate("workflows"));
+    await waitForApp(() => expect(latestNavigationProps().activePage).toBe("workflows"));
+
+    expect(latestWorkflowFeatureProps().initialRequest).toBeUndefined();
+    expect(harness.createWorkflowDraft).not.toHaveBeenCalled();
+  });
+
   it("loads automation details before showing all workflows", async () => {
     let finishLoadingDetails: (() => void) | undefined;
     const detailsLoaded = new Promise<undefined>((resolve) => {
