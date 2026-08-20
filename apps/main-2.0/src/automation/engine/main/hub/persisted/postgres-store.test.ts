@@ -8,7 +8,7 @@ import { PostgresAppStore } from "./postgres-store";
 
 async function insertWorkflow(
   database: PostgresDatabase,
-  input: { id: string; nodeCount?: number; updatedAt: number },
+  input: { id: string; nodeCount?: number; updatedAt: number; isTemplate?: boolean },
 ): Promise<void> {
   const definition = {
     id: input.id,
@@ -16,6 +16,7 @@ async function insertWorkflow(
     description: "",
     inputs: [],
     nodes: Array.from({ length: input.nodeCount ?? 0 }, (_, index) => ({ id: `node-${index}` })),
+    isTemplate: input.isTemplate,
     createdAt: input.updatedAt,
     updatedAt: input.updatedAt,
   };
@@ -292,13 +293,30 @@ describe("PostgreSQL AgentHub persistence", () => {
     });
   });
 
-  it("loads a bounded Workflow Core workbench summary with active runs prioritized", async () => {
+  it("loads a bounded personal Workflow Core summary with active runs prioritized", async () => {
+    await insertWorkflow(database, {
+      id: "template",
+      nodeCount: 7,
+      updatedAt: 10_000,
+      isTemplate: true,
+    });
     await insertWorkflow(database, { id: "waiting", nodeCount: 1, updatedAt: 1_000 });
-    await insertWorkflow(database, { id: "running", nodeCount: 2, updatedAt: 1_100 });
+    await insertWorkflow(database, {
+      id: "running",
+      nodeCount: 2,
+      updatedAt: 1_100,
+      isTemplate: false,
+    });
     await insertWorkflow(database, { id: "failed", nodeCount: 3, updatedAt: 5_000 });
     await insertWorkflow(database, { id: "draft", nodeCount: 4, updatedAt: 2_400 });
     await insertWorkflow(database, { id: "paused", nodeCount: 5, updatedAt: 1_200 });
     await insertWorkflow(database, { id: "completed", nodeCount: 6, updatedAt: 1_300 });
+    await insertWorkflowRun(database, {
+      id: "run-template",
+      workflowId: "template",
+      status: "waiting",
+      startedAt: 11_000,
+    });
     await insertWorkflowRun(database, {
       id: "run-waiting",
       workflowId: "waiting",
@@ -376,7 +394,7 @@ describe("PostgreSQL AgentHub persistence", () => {
         },
       ],
       totalCount: 6,
-      activeCount: 3,
+      activeCount: 2,
     });
     expect(query).toHaveBeenCalledTimes(1);
     const [sql, parameters] = query.mock.calls[0]!;

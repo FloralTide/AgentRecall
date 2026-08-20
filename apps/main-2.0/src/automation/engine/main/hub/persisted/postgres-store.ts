@@ -127,13 +127,14 @@ export class PostgresAppStore implements AgentHubPersistedStore {
             run.id
           LIMIT 1
         ) AS selected_run ON true
+        WHERE workflow.definition -> 'isTemplate' IS DISTINCT FROM 'true'::jsonb
       ),
       counted AS (
         SELECT
           workflow_overview.*,
           count(*) OVER ()::integer AS total_count,
           count(*) FILTER (
-            WHERE run_status IN ('running', 'waiting', 'paused')
+            WHERE run_status IN ('running', 'waiting')
           ) OVER ()::integer AS active_count
         FROM workflow_overview
       )
