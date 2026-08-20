@@ -437,12 +437,6 @@ export class ProviderService {
         });
         credentialSource = credential.source || credentialSource;
         const requestedBaseUrl = apiConfig.customBaseUrl.trim().replace(/\/+$/, "");
-        const providerId = apiConfig.customProviderId === "custom"
-          ? "agent-recall-connection-test"
-          : apiConfig.customProviderId;
-        const providerKey = /^[A-Za-z0-9_-]+$/.test(providerId)
-          ? providerId
-          : JSON.stringify(providerId);
         if (!credential.apiKey) {
           if (apiConfig.customApiFormat === "openai_chat") {
             throw new Error(
@@ -450,7 +444,9 @@ export class ProviderService {
             );
           }
           const snapshot = await this.operations.loadCodexConfigSnapshot(apiConfig.customConfigDir || undefined);
-          const configuredProvider = snapshot.providers.find((provider) => provider.id === providerId);
+          const configuredProvider = snapshot.providers.find(
+            (provider) => provider.id === apiConfig.customProviderId,
+          );
           if (
             !configuredProvider
             || configuredProvider.baseUrl.trim().replace(/\/+$/, "") !== requestedBaseUrl
@@ -460,8 +456,11 @@ export class ProviderService {
             );
           }
           credentialSource = configuredProvider.credentialSource || credentialSource;
-          endpoint.cliArgs = ["-c", `model_provider=${JSON.stringify(providerId)}`];
+          endpoint.cliArgs = ["-c", `model_provider=${JSON.stringify(apiConfig.customProviderId)}`];
         } else {
+          // A reserved one-shot provider prevents an existing provider's mutually exclusive
+          // `auth` block from being combined with the env-key authentication below.
+          const providerId = "agent-recall-connection-test";
           let baseUrl = requestedBaseUrl;
           if (apiConfig.customApiFormat === "openai_chat") {
             testProxy = this.operations.createCodexChatProxy({
@@ -473,7 +472,7 @@ export class ProviderService {
             });
             baseUrl = (await testProxy.start()).baseUrl;
           }
-          const prefix = `model_providers.${providerKey}`;
+          const prefix = `model_providers.${providerId}`;
           endpoint.cliArgs = [
             "-c", `model_provider=${JSON.stringify(providerId)}`,
             "-c", `${prefix}.name=${JSON.stringify(apiConfig.customProviderName || providerId)}`,

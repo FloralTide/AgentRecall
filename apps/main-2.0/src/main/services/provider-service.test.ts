@@ -327,8 +327,8 @@ describe("Provider connection tests", () => {
           OPENAI_API_KEY: "stored-key",
         },
         cliArgs: expect.arrayContaining([
-          "model_provider=\"gateway\"",
-          "model_providers.gateway.base_url=\"https://gateway.example/v1\"",
+          "model_provider=\"agent-recall-connection-test\"",
+          "model_providers.agent-recall-connection-test.base_url=\"https://gateway.example/v1\"",
         ]),
       }),
       expect.anything(),
