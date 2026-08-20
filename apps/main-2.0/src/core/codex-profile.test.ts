@@ -331,10 +331,10 @@ describe("codex profile switching", () => {
         [
           'model_provider = "gateway"',
           "",
-          "[model_providers.gateway]",
+          "[model_providers.gateway] # provider route",
           'base_url = "https://api.example/v1"',
           "",
-          "[model_providers.gateway.auth]",
+          "[model_providers.gateway.auth] # external credential helper",
           'command = "agent-recall-helper-must-not-run"',
         ].join("\n"),
       );
@@ -506,7 +506,7 @@ describe("codex profile switching", () => {
           'model_provider = "gateway"',
           'model = "old-model"',
           "",
-          "[model_providers.gateway]",
+          "[model_providers.gateway] # provider route",
           'name = "Old Gateway"',
           'base_url = "https://new.example/v1"',
           'wire_api = "responses"',
@@ -514,7 +514,7 @@ describe("codex profile switching", () => {
           'env_key = "OPENAI_API_KEY"',
           'experimental_bearer_token = "stale-inline-key"',
           "",
-          "[model_providers.gateway.auth]",
+          "[model_providers.gateway.auth] # external credential helper",
           'command = "agent-recall-helper-must-not-run"',
           'args = ["token", "--json"]',
           `cwd = ${JSON.stringify(codexHome)}`,
@@ -546,7 +546,8 @@ describe("codex profile switching", () => {
       expect(config).not.toContain("requires_openai_auth");
       expect(config).not.toContain("env_key");
       expect(config).not.toContain("experimental_bearer_token");
-      expect(config).toContain("[model_providers.gateway.auth]");
+      expect(config).toContain("[model_providers.gateway] # provider route");
+      expect(config).toContain("[model_providers.gateway.auth] # external credential helper");
       expect(config).toContain('command = "agent-recall-helper-must-not-run"');
       expect(config).toContain('args = ["token", "--json"]');
       expect(config).toContain(`cwd = ${JSON.stringify(codexHome)}`);
@@ -626,10 +627,10 @@ describe("codex profile switching", () => {
       await writeFile(
         path.join(codexHome, "config.toml"),
         [
-          "[model_providers.gateway]",
+          "[model_providers.gateway] # provider route",
           'base_url = "https://old.example/v1"',
           "",
-          "[model_providers.gateway.auth]",
+          "[model_providers.gateway.auth] # external credential helper",
           'command = "agent-recall-helper-must-not-run"',
           'args = ["token"]',
         ].join("\n"),
@@ -651,6 +652,8 @@ describe("codex profile switching", () => {
       const config = await readFile(path.join(codexHome, "config.toml"), "utf8");
       expect(config).not.toContain("[model_providers.gateway.auth]");
       expect(config).not.toContain("agent-recall-helper-must-not-run");
+      expect(config).toContain("[model_providers.gateway] # provider route");
+      expect(config.match(/\[model_providers\.gateway\]/g)).toHaveLength(1);
       expect(config).toContain("requires_openai_auth = true");
       expect(config).toContain('experimental_bearer_token = "explicit-key"');
       await expect(readFile(path.join(codexHome, "auth.json"), "utf8")).resolves.toContain(

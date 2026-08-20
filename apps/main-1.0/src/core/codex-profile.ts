@@ -754,7 +754,7 @@ function normalizeBaseUrl(baseUrl: string | null): string {
 
 function readCodexModelProviders(text: string): CodexConfigProviderEntry[] {
   const providers: CodexConfigProviderEntry[] = [];
-  const sectionPattern = /^\s*\[model_providers\.([A-Za-z0-9_-]+|"(?:\\.|[^"\\])+")\]\s*$/;
+  const sectionPattern = /^\s*\[model_providers\.([A-Za-z0-9_-]+|"(?:\\.|[^"\\])+")\]\s*(?:#.*)?$/;
   const lines = text.split(/\r?\n/);
   for (let index = 0; index < lines.length; index += 1) {
     const match = lines[index].match(sectionPattern);
@@ -855,7 +855,7 @@ function removeTopLevelTomlKey(text: string, key: string): string {
 
 function removeTomlSectionKey(text: string, sectionHeader: string, key: string): string {
   const lines = text.split(/\r?\n/);
-  const sectionStart = lines.findIndex((line) => line.trim() === sectionHeader);
+  const sectionStart = lines.findIndex((line) => isTomlSectionHeader(line, sectionHeader));
   if (sectionStart < 0) return text;
   let sectionEnd = lines.findIndex((line, index) => index > sectionStart && /^\s*\[/.test(line));
   if (sectionEnd < 0) sectionEnd = lines.length;
@@ -868,7 +868,7 @@ function removeTomlSectionKey(text: string, sectionHeader: string, key: string):
 
 function removeTomlSection(text: string, sectionHeader: string): string {
   const lines = text.split(/\r?\n/);
-  const sectionStart = lines.findIndex((line) => line.trim() === sectionHeader);
+  const sectionStart = lines.findIndex((line) => isTomlSectionHeader(line, sectionHeader));
   if (sectionStart < 0) return text;
   let sectionEnd = lines.findIndex((line, index) => index > sectionStart && /^\s*\[/.test(line));
   if (sectionEnd < 0) sectionEnd = lines.length;
@@ -882,7 +882,7 @@ function replaceOrInsertSectionString(text: string, sectionHeader: string, key: 
 
 function replaceOrInsertSectionLiteral(text: string, sectionHeader: string, key: string, value: string): string {
   const lines = text.split(/\r?\n/);
-  let sectionStart = lines.findIndex((line) => line.trim() === sectionHeader);
+  let sectionStart = lines.findIndex((line) => isTomlSectionHeader(line, sectionHeader));
   if (sectionStart < 0) {
     lines.push("", sectionHeader);
     sectionStart = lines.length - 1;
@@ -926,7 +926,7 @@ async function readOptionalFile(filePath: string): Promise<string> {
 
 function readTomlSection(text: string, sectionHeader: string): string {
   const lines = text.split(/\r?\n/);
-  const start = lines.findIndex((line) => line.trim() === sectionHeader);
+  const start = lines.findIndex((line) => isTomlSectionHeader(line, sectionHeader));
   if (start < 0) return "";
   const sectionLines: string[] = [];
   for (let i = start + 1; i < lines.length; i += 1) {
@@ -934,6 +934,13 @@ function readTomlSection(text: string, sectionHeader: string): string {
     sectionLines.push(lines[i]);
   }
   return sectionLines.join("\n");
+}
+
+function isTomlSectionHeader(line: string, sectionHeader: string): boolean {
+  const trimmed = line.trimStart();
+  if (!trimmed.startsWith(sectionHeader)) return false;
+  const suffix = trimmed.slice(sectionHeader.length).trimStart();
+  return suffix.length === 0 || suffix.startsWith("#");
 }
 
 function readTomlString(text: string, key: string): string | null {
