@@ -100,6 +100,17 @@ function replaceLstatSync(replacement: typeof fs.lstatSync): () => void {
   };
 }
 
+function replaceRealpathSync(replacement: typeof fs.realpathSync): () => void {
+  const mutableRealpathFs = mutableFs as unknown as { realpathSync: typeof fs.realpathSync };
+  const original = mutableRealpathFs.realpathSync;
+  mutableRealpathFs.realpathSync = replacement;
+  syncBuiltinESMExports();
+  return () => {
+    mutableRealpathFs.realpathSync = original;
+    syncBuiltinESMExports();
+  };
+}
+
 describe("AgentRecall bundled Skills", () => {
   it("ships aihot as an official built-in Skill", () => {
     expect(AGENT_RECALL_BUILTIN_SKILLS).toContainEqual({
@@ -313,6 +324,31 @@ describe("ManagedSkillLibrary conflicting installation targets", () => {
       expect(() => fixture.library.delete(fixture.managedId)).toThrow("simulated access denied");
     } finally {
       restoreLstatSync();
+    }
+
+    expect(fs.lstatSync(targetPath).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(targetPath)).toBe(fs.realpathSync(fixture.managedSkillPath));
+    expect(fs.existsSync(path.join(fixture.managedSkillPath, "SKILL.md"))).toBe(true);
+  });
+
+  it("refuses to delete a managed Skill when an installed target cannot be resolved", () => {
+    const fixture = createManagedSkillFixture();
+    const targetPath = path.join(fixture.homeDir, ".codex", "skills", fixture.managedId);
+    fixture.library.updateTargets(fixture.managedId, ["codex"]);
+    const originalRealpathSync = mutableFs.realpathSync;
+    const restoreRealpathSync = replaceRealpathSync(((...args: unknown[]) => {
+      if (path.resolve(String(args[0])) === path.resolve(targetPath)) {
+        const error = new Error("simulated realpath access denied") as NodeJS.ErrnoException;
+        error.code = "EACCES";
+        throw error;
+      }
+      return Reflect.apply(originalRealpathSync, mutableFs, args);
+    }) as typeof fs.realpathSync);
+
+    try {
+      expect(() => fixture.library.delete(fixture.managedId)).toThrow("simulated realpath access denied");
+    } finally {
+      restoreRealpathSync();
     }
 
     expect(fs.lstatSync(targetPath).isSymbolicLink()).toBe(true);

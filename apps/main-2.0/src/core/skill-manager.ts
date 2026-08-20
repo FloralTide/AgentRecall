@@ -414,7 +414,7 @@ function readSkillsFromRoot(root: SkillRootConfig): InstalledSkill[] {
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       if (!entry.isDirectory()) continue;
       if (directoryPath === root.path && entry.name === ".system") continue;
-      if (directoryPath === root.path && isManagedSkillBackupDirectoryName(entry.name)) continue;
+      if (isManagedSkillBackupDirectoryName(entry.name)) continue;
       const childPath = path.join(directoryPath, entry.name);
       const skill = readSkillFile(path.join(childPath, "SKILL.md"), entry.name, root);
       if (skill) skills.push(skill);

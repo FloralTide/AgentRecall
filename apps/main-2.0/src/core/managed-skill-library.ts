@@ -594,7 +594,8 @@ export class ManagedSkillLibrary {
       const actual = path.resolve(fs.realpathSync(targetPath));
       const expected = path.resolve(fs.realpathSync(this.managedSkillDirectory(managedId)));
       return { target, path: targetPath, state: actual === expected ? "installed" : "conflict" };
-    } catch {
+    } catch (error) {
+      if (strict && !isMissingPathError(error)) throw error;
       return { target, path: targetPath, state: "conflict" };
     }
   }

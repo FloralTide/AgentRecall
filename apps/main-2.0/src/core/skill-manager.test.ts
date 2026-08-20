@@ -50,8 +50,9 @@ describe("listInstalledSkills", () => {
     );
     writeSkill(
       path.join(skillsRoot, "collection", `.nested.agent-recall-backup-${backupUuid}`),
-      "Nested reserved-like Skill",
+      "Nested backup",
     );
+    writeSkill(path.join(skillsRoot, "collection", ".nested-hidden-skill"), "Nested hidden Skill");
 
     const snapshot = listInstalledSkills({
       homeDir,
@@ -62,7 +63,7 @@ describe("listInstalledSkills", () => {
 
     expect(snapshot.skills.map((skill) => skill.name)).toEqual([
       "Hidden Skill",
-      "Nested reserved-like Skill",
+      "Nested hidden Skill",
       "Non-v4 backup-like Skill",
       "Similar non-backup Skill",
       "Uppercase backup-like Skill",
@@ -70,6 +71,7 @@ describe("listInstalledSkills", () => {
     expect(snapshot.skills.some((skill) => skill.name === "Root backup")).toBe(false);
     expect(snapshot.skills.some((skill) => skill.name === "Nested inside root backup")).toBe(false);
     expect(snapshot.skills.some((skill) => skill.name === "PID backup")).toBe(false);
+    expect(snapshot.skills.some((skill) => skill.name === "Nested backup")).toBe(false);
     expect(snapshot.roots.find((root) => root.source === "codex-user")?.skillCount).toBe(5);
   });
 });
