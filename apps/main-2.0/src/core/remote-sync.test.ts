@@ -20,6 +20,7 @@ describe("remote sync", () => {
     const childId = "child-session";
     const parentPath = path.join(tempHome, ".codex", "sessions", "2026", "08", "20", "parent.jsonl");
     const childPath = path.join(tempHome, ".codex", "sessions", "2026", "08", "20", "child.jsonl");
+    const sessionIdOnlyPath = path.join(tempHome, ".codex", "sessions", "2026", "08", "20", "session-id-only.jsonl");
     const writeJsonl = (filePath: string, rows: unknown[]) => {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
       fs.writeFileSync(filePath, rows.map((row) => JSON.stringify(row)).join("\n"), "utf8");
@@ -93,6 +94,25 @@ describe("remote sync", () => {
           },
         },
       ]);
+      writeJsonl(sessionIdOnlyPath, [
+        {
+          type: "session_meta",
+          timestamp: "2026-08-20T06:35:00.000Z",
+          payload: {
+            session_id: "semantic-session-id",
+            cwd: "/workspace/legacy",
+          },
+        },
+        {
+          type: "response_item",
+          timestamp: "2026-08-20T06:36:00.000Z",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "legacy identity question" }],
+          },
+        },
+      ]);
       fs.utimesSync(parentPath, new Date(2_000), new Date(2_000));
       fs.utimesSync(childPath, new Date(1_000), new Date(1_000));
 
@@ -129,12 +149,20 @@ describe("remote sync", () => {
         parentSessionId: parentId,
         timestamp: Date.parse("2026-08-20T06:33:00.000Z"),
       });
-      await expect(store.searchSessions({
+      await expect(store.getSession(`ssh:${environment.id}:codex-cli:session-id-only`)).resolves.toMatchObject({
+        rawId: "session-id-only",
+        projectPath: "/workspace/legacy",
+      });
+      await expect(store.getSession(`ssh:${environment.id}:codex-cli:semantic-session-id`)).resolves.toBeNull();
+      const rootSessions = await store.searchSessions({
         environmentId: environment.id,
         excludeSubagents: true,
-      })).resolves.toEqual([
+      });
+      expect(rootSessions).toEqual(expect.arrayContaining([
         expect.objectContaining({ rawId: parentId }),
-      ]);
+        expect.objectContaining({ rawId: "session-id-only" }),
+      ]));
+      expect(rootSessions).toHaveLength(2);
     } finally {
       await store.close();
       fs.rmSync(tempHome, { recursive: true, force: true });

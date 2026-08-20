@@ -248,6 +248,14 @@ describe("remote sync", () => {
           payload: { id: parentId, cwd: "/repo/parent", source: "vscode" },
         },
       ]);
+      writeJsonl(path.join(tempHome, ".codex", "sessions", "2026", "08", "20", "session-id-only.jsonl"), [
+        {
+          type: "session_meta",
+          timestamp: "2026-08-20T06:45:00Z",
+          payload: { session_id: "semantic-session-id", cwd: "/repo/legacy" },
+        },
+        message("legacy identity question"),
+      ]);
 
       await syncRemoteEnvironment(store, environment, {
         runSsh: async (_environment, remoteCommand) => execFileSync(
@@ -273,8 +281,14 @@ describe("remote sync", () => {
           isSubagent: true,
           parentSessionId: parentId,
         }),
+        expect.objectContaining({
+          sessionKey: "ssh:ssh-devbox:codex-cli:session-id-only",
+          rawId: "session-id-only",
+          projectPath: "/repo/legacy",
+        }),
       ]));
-      expect(sessions).toHaveLength(2);
+      expect(sessions).toHaveLength(3);
+      expect(store.getSession("ssh:ssh-devbox:codex-cli:semantic-session-id")).toBeNull();
     } finally {
       store.close();
       fs.rmSync(tempHome, { recursive: true, force: true });

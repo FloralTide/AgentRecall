@@ -1225,34 +1225,34 @@ def emit_codex_summary(path, stat, titles, source):
         if row.get("type") == "session_meta":
           payload = row.get("payload")
           if isinstance(payload, dict):
-            session_id = payload.get("id")
-            if not isinstance(session_id, str) or not session_id:
-              session_id = payload.get("session_id")
-            if isinstance(session_id, str) and session_id:
+            meta_id = payload.get("id")
+            same_identity = not session_identity_found
+            if isinstance(meta_id, str) and meta_id:
               if not session_identity_found:
-                raw_id = session_id
+                raw_id = meta_id
                 session_identity_found = True
-              if session_id == raw_id:
-                candidate_project_path = payload.get("cwd")
-                if not usable_codex_project_path(project_path) and isinstance(candidate_project_path, str):
-                  project_path = candidate_project_path
-                git = payload.get("git")
-                if not git_branch and isinstance(git, dict) and isinstance(git.get("branch"), str):
-                  git_branch = git.get("branch")
-                structured_source = payload.get("source")
-                if isinstance(structured_source, dict):
-                  subagent = structured_source.get("subagent")
-                  thread_spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
-                  if isinstance(thread_spawn, dict) and isinstance(thread_spawn.get("parent_thread_id"), str):
-                    is_subagent = True
-                    parent_session_id = parent_session_id or thread_spawn.get("parent_thread_id")
-                if payload.get("thread_source") == "subagent" and isinstance(payload.get("parent_thread_id"), str):
+              same_identity = meta_id == raw_id
+            if same_identity:
+              candidate_project_path = payload.get("cwd")
+              if not usable_codex_project_path(project_path) and isinstance(candidate_project_path, str):
+                project_path = candidate_project_path
+              git = payload.get("git")
+              if not git_branch and isinstance(git, dict) and isinstance(git.get("branch"), str):
+                git_branch = git.get("branch")
+              structured_source = payload.get("source")
+              if isinstance(structured_source, dict):
+                subagent = structured_source.get("subagent")
+                thread_spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
+                if isinstance(thread_spawn, dict) and isinstance(thread_spawn.get("parent_thread_id"), str):
                   is_subagent = True
-                  parent_session_id = parent_session_id or payload.get("parent_thread_id")
-                parsed_timestamp = _iso_timestamp_ms(row.get("timestamp"))
-                if parsed_timestamp is not None and not session_timestamp_found:
-                  timestamp = parsed_timestamp
-                  session_timestamp_found = True
+                  parent_session_id = parent_session_id or thread_spawn.get("parent_thread_id")
+              if payload.get("thread_source") == "subagent" and isinstance(payload.get("parent_thread_id"), str):
+                is_subagent = True
+                parent_session_id = parent_session_id or payload.get("parent_thread_id")
+              parsed_timestamp = _iso_timestamp_ms(row.get("timestamp"))
+              if parsed_timestamp is not None and not session_timestamp_found:
+                timestamp = parsed_timestamp
+                session_timestamp_found = True
           continue
         if not row.get("type") and isinstance(row.get("id"), str) and isinstance(row.get("timestamp"), str):
           if not session_identity_found:
