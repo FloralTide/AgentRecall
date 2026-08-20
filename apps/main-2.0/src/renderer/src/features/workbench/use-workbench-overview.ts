@@ -9,6 +9,7 @@ import type {
 } from "../../../../core/types";
 import type { QuotaFeedback, StatsFeedback } from "../../app-types";
 import { localize, type LanguageMode } from "../../language";
+import { LiveSessionSnapshotRefreshCoordinator } from "../../live-filter";
 import { WORKBENCH_SESSION_LIMIT } from "../../session-ui";
 
 const EMPTY_STATS: SessionStats = {
@@ -53,6 +54,7 @@ export function useWorkbenchOverview(language: LanguageMode) {
   const [quotaLoading, setQuotaLoading] = useState(true);
   const [quotaFeedback, setQuotaFeedback] = useState<QuotaFeedback>(null);
   const [liveSessions, setLiveSessions] = useState<LiveSessionSnapshot>(EMPTY_LIVE_SESSIONS);
+  const liveSessionRefreshCoordinator = useRef(new LiveSessionSnapshotRefreshCoordinator()).current;
   const sessionsLoadSequence = useRef(0);
   const statsLoadSequence = useRef(0);
   const t = useCallback(
@@ -166,17 +168,13 @@ export function useWorkbenchOverview(language: LanguageMode) {
     }
   }, [t]);
 
-  const refreshLiveSessions = useCallback(async (): Promise<void> => {
-    try {
-      setLiveSessions(await window.sessionSearch.getLiveSessions());
-    } catch (error) {
-      setLiveSessions({
-        generatedAt: new Date().toISOString(),
-        sessions: [],
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }, []);
+  const refreshLiveSessions = useCallback(
+    () => liveSessionRefreshCoordinator.refresh(
+      () => window.sessionSearch.getLiveSessions(),
+      setLiveSessions,
+    ),
+    [liveSessionRefreshCoordinator],
+  );
 
   useEffect(() => {
     const initialTimer = window.setTimeout(() => void loadQuotas(), 100);

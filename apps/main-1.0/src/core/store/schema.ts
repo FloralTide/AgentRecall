@@ -253,6 +253,8 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
       ON token_events(timestamp);
     CREATE INDEX IF NOT EXISTS idx_message_events_timestamp
       ON message_events(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_message_events_session_timestamp
+      ON message_events(session_key, timestamp DESC);
     CREATE INDEX IF NOT EXISTS idx_message_attachments_session_message
       ON message_attachments(session_key, message_index, attachment_index);
     CREATE INDEX IF NOT EXISTS idx_token_events_dedupe

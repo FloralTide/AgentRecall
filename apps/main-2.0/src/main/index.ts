@@ -30,6 +30,7 @@ import { indexMigratedSessionFile, syncDefaultSessionsInBatches, type IndexStatu
 import { createIndexRunCoordinator } from "../core/index-run-coordinator";
 import { createIndexProgressPublisher } from "./index-progress";
 import { createSessionIndexFailureLogger } from "./session-index-failure-log";
+import { LocalLiveSessionService } from "./services/local-live-session-service";
 import { createStartupTaskScheduler } from "./startup-tasks";
 import { createInterfaceZoomController } from "./interface-zoom";
 import {
@@ -1830,7 +1831,14 @@ function runIndexSync(): Promise<IndexStatus> {
   });
 }
 
-const loadCachedLocalLiveSessionSnapshot = createCachedLiveSessionSnapshotLoader();
+// V2 catalog and statistics reads already use asynchronous PostgreSQL APIs;
+// only local process and session-file inspection needs a worker here.
+const localLiveSessionService = new LocalLiveSessionService(
+  path.join(__dirname, "live-session-worker.js"),
+);
+const loadCachedLocalLiveSessionSnapshot = createCachedLiveSessionSnapshotLoader({
+  load: (options) => localLiveSessionService.load(options),
+});
 const loadCachedLiveSessionSnapshot = createCachedLiveSessionSnapshotLoader({
   load: async (options) => {
     const [snapshot, remoteSnapshot] = await Promise.all([
@@ -2967,6 +2975,7 @@ app.on("before-quit", (event) => {
   installedRuntimeMonitor?.stop();
   openVikingHookStateFlusher?.stop();
   stopAutoIndexRefresh();
+  localLiveSessionService.stop();
   skillService.stopUsageRefresh();
   remoteSessionService.stopQueue();
   quotaService?.stop();

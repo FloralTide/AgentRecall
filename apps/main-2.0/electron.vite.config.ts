@@ -5,6 +5,14 @@ import { resolve } from "node:path";
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
+    build: {
+      rollupOptions: {
+        input: {
+          index: resolve("src/main/index.ts"),
+          "live-session-worker": resolve("src/main/live-session-worker.ts"),
+        },
+      },
+    },
   },
   preload: {
     plugins: [externalizeDepsPlugin()],

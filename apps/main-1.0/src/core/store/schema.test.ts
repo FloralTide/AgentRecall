@@ -43,6 +43,36 @@ describe("session store schema", () => {
     }
   });
 
+  it("uses the composite message activity index for per-session latest timestamps", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      migrateSessionStore(db);
+
+      expect(
+        db.prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_message_events_session_timestamp'",
+        ).get(),
+      ).toEqual({ name: "idx_message_events_session_timestamp" });
+
+      const plan = db.prepare(`
+        EXPLAIN QUERY PLAN
+        SELECT sessions.session_key,
+          (
+            SELECT MAX(message_events.timestamp)
+            FROM message_events
+            WHERE message_events.session_key = sessions.session_key
+          ) AS last_activity_at
+        FROM sessions
+      `).all() as Array<{ detail: string }>;
+
+      expect(plan.map((row) => row.detail).join("\n")).toContain(
+        "USING COVERING INDEX idx_message_events_session_timestamp (session_key=?)",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
   it("upgrades the legacy data migration marker schema without losing completed markers", () => {
     const db = new DatabaseSync(":memory:");
     try {

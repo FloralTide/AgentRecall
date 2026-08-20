@@ -101,6 +101,8 @@ import { buildSshArgs, readUserSshConfig } from "../core/ssh-config";
 import { listWslDistributions } from "../core/wsl";
 import { SessionBulkDeleteService } from "./services/session-bulk-delete-service";
 import { LocalSessionIndexService } from "./services/local-session-index-service";
+import { LocalLiveSessionService } from "./services/local-live-session-service";
+import { LocalSessionQueryService } from "./services/local-session-query-service";
 import { retrySqliteWrite } from "./sqlite-write-retry";
 import type {
   SessionIndexWorkerInput,
@@ -263,6 +265,9 @@ let remoteEnvironmentLifecycle: RemoteEnvironmentLifecycle | null = null;
 let wslSessionIndexer: WslSessionIndexer | null = null;
 let quotaService: QuotaService;
 let localSessionIndexService: LocalSessionIndexService | null = null;
+let localLiveSessionService: LocalLiveSessionService | null = null;
+let localSessionQueryService: LocalSessionQueryService | null = null;
+let localSessionStatsQueryService: LocalSessionQueryService | null = null;
 let localSessionWorkerQueue: Promise<void> = Promise.resolve();
 let localSessionWorkersStopping = false;
 let quitStarted = false;
@@ -550,6 +555,42 @@ function listVisibleProjects(options: ProjectQueryOptions = {}): ProjectSummary[
   return mergeCodexDesktopProjects(indexed, readCodexDesktopProjects(codexDesktopHome()));
 }
 
+function assertLocalSessionWorkersCanStart(): void {
+  if (quitStarted || localSessionWorkersStopping) {
+    throw new Error("Local session workers are stopping.");
+  }
+}
+
+function createLocalSessionQueryService(): LocalSessionQueryService {
+  assertLocalSessionWorkersCanStart();
+  return new LocalSessionQueryService(path.join(__dirname, "session-query-worker.js"), {
+    dbPath: path.join(app.getPath("userData"), "session-search.sqlite"),
+    codexHome: codexDesktopHome(),
+  });
+}
+
+function sessionCatalogQueries(): LocalSessionQueryService {
+  assertLocalSessionWorkersCanStart();
+  localSessionQueryService ??= createLocalSessionQueryService();
+  return localSessionQueryService;
+}
+
+function sessionStatsQueries(): LocalSessionQueryService {
+  // Usage aggregation can scan a large token history. Keep it on a separate
+  // worker so a stats refresh never queues interactive search and list reads.
+  assertLocalSessionWorkersCanStart();
+  localSessionStatsQueryService ??= createLocalSessionQueryService();
+  return localSessionStatsQueryService;
+}
+
+function localLiveSessions(): LocalLiveSessionService {
+  assertLocalSessionWorkersCanStart();
+  localLiveSessionService ??= new LocalLiveSessionService(
+    path.join(__dirname, "live-session-worker.js"),
+  );
+  return localLiveSessionService;
+}
+
 function disabledOptionalSources(settings: AppSettings): SessionSource[] {
   return OPTIONAL_SOURCE_SETTINGS.flatMap((item) => (settings[item.key] ? [] : item.sources));
 }
@@ -560,7 +601,7 @@ function runLocalSessionWorker(
   onStart?: () => void,
 ): Promise<SessionIndexWorkerResult> {
   const request = localSessionWorkerQueue.then(() => {
-    if (localSessionWorkersStopping) throw new Error("Local session workers are stopping.");
+    assertLocalSessionWorkersCanStart();
     onStart?.();
     localSessionIndexService ??= new LocalSessionIndexService(path.join(__dirname, "session-index-worker.js"));
     return localSessionIndexService.run(input, handlers);
@@ -1303,7 +1344,9 @@ function runIndexSync(): Promise<IndexStatus> {
   });
 }
 
-const loadCachedLocalLiveSessionSnapshot = createCachedLiveSessionSnapshotLoader();
+const loadCachedLocalLiveSessionSnapshot = createCachedLiveSessionSnapshotLoader({
+  load: (options) => localLiveSessions().load(options),
+});
 const loadCachedLiveSessionSnapshot = createCachedLiveSessionSnapshotLoader({
   load: async (options) => {
     const [snapshot, remoteSnapshot] = await Promise.all([
@@ -1898,8 +1941,10 @@ function registerIpc(): void {
     if (!url) throw new Error("Only HTTP, HTTPS, and mailto links can be opened externally.");
     return shell.openExternal(url);
   });
-  ipcMain.handle("search:sessions", (_event, options: SearchOptions) => store.searchSessions(visibleSearchOptions(options)));
-  ipcMain.handle("search:session-page", (_event, options: SearchOptions) => store.searchSessionPage(visibleSearchOptions(options)));
+  ipcMain.handle("search:sessions", (_event, options: SearchOptions) =>
+    sessionCatalogQueries().searchSessions(visibleSearchOptions(options)));
+  ipcMain.handle("search:session-page", (_event, options: SearchOptions) =>
+    sessionCatalogQueries().searchSessionPage(visibleSearchOptions(options)));
   ipcMain.handle("session:get", (_event, sessionKey: string) => {
     const session = store.getSession(sessionKey);
     if (session) {
@@ -2038,7 +2083,9 @@ function registerIpc(): void {
     // CLI write a grounded answer over the hits.
     if (isLocalCliEndpoint(endpoint)) {
       const search = async (query: string): Promise<FallbackSessionHit[]> => {
-        const sessions = store.searchSessions(visibleSearchOptions({ query, limit: 12 }));
+        const sessions = await sessionCatalogQueries().searchSessions(
+          visibleSearchOptions({ query, limit: 12 }),
+        );
         return sessions.map((session) => ({
           sessionKey: session.sessionKey,
           title: session.displayTitle,
@@ -2063,7 +2110,7 @@ function registerIpc(): void {
           const source = typeof args.source === "string" && args.source ? args.source : undefined;
           const projectPath = typeof args.project === "string" && args.project ? args.project : undefined;
           const limit = typeof args.limit === "number" ? Math.max(1, Math.min(50, Math.floor(args.limit))) : 20;
-          const sessions = store.searchSessions(visibleSearchOptions({
+          const sessions = await sessionCatalogQueries().searchSessions(visibleSearchOptions({
             query,
             source: source as SearchOptions["source"],
             projectPath,
@@ -2082,14 +2129,17 @@ function registerIpc(): void {
           };
         }
         case "list_projects": {
-          const projects = listVisibleProjects(visibleProjectOptions());
+          const projects = await sessionCatalogQueries().listProjects(visibleProjectOptions());
           return {
             result: projects.map((project) => ({ project: project.path, sessions: project.sessionCount })),
             sessionKeys: [],
           };
         }
         case "list_tags": {
-          return { result: store.listTags(visibleProjectOptions()), sessionKeys: [] };
+          return {
+            result: await sessionCatalogQueries().listTags(visibleProjectOptions()),
+            sessionKeys: [],
+          };
         }
         case "get_session": {
           const sessionKey = typeof args.sessionKey === "string" ? args.sessionKey : "";
@@ -2138,15 +2188,18 @@ function registerIpc(): void {
     settingsStore.set("sessionSearchMcpEnabled", enabled);
     return setup.status();
   });
-  ipcMain.handle("stats:get", (_event, options?: SessionStatsOptions) => store.getStats(visibleStatsOptions(options)));
-  ipcMain.handle("stats:trend", (_event, options?: SessionStatsOptions) => store.getStatsTrend(visibleStatsOptions(options)));
+  ipcMain.handle("stats:get", (_event, options?: SessionStatsOptions) =>
+    sessionStatsQueries().getStats(visibleStatsOptions(options)));
+  ipcMain.handle("stats:trend", (_event, options?: SessionStatsOptions) =>
+    sessionStatsQueries().getStatsTrend(visibleStatsOptions(options)));
   ipcMain.handle("tags:list", (_event, options?: TagListOptions) =>
-    store.listTags({ ...options, ...visibleProjectOptions() }),
+    sessionCatalogQueries().listTags({ ...options, ...visibleProjectOptions() }),
   );
   ipcMain.handle("projects:list", (_event, options?: ProjectQueryOptions) =>
-    listVisibleProjects({ ...options, ...visibleProjectOptions() }),
+    sessionCatalogQueries().listProjects({ ...options, ...visibleProjectOptions() }),
   );
-  ipcMain.handle("tags:by-project", () => store.listTagsByProject(visibleProjectOptions()));
+  ipcMain.handle("tags:by-project", () =>
+    sessionCatalogQueries().listTagsByProject(visibleProjectOptions()));
   ipcMain.handle("environments:list", () => store.listEnvironments());
   ipcMain.handle("ssh-config:list-hosts", () => readUserSshConfig());
   ipcMain.handle("wsl:list-distributions", () => listWslDistributions());
@@ -2654,6 +2707,9 @@ app.on("before-quit", () => {
   stopAutoIndexRefresh();
   localSessionWorkersStopping = true;
   localSessionIndexService?.stop();
+  localLiveSessionService?.stop();
+  localSessionQueryService?.stop();
+  localSessionStatsQueryService?.stop();
   skillService.stopUsageRefresh();
   remoteSessionService.stopQueue();
   quotaService?.stop();
