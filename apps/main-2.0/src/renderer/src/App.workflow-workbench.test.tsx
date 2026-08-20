@@ -385,11 +385,22 @@ describe("App workflow workbench wiring", () => {
   });
 
   it("opens a workbench workflow through the feature page request without selecting a legacy workflow", async () => {
+    let finishLoadingDetails: (() => void) | undefined;
+    const detailsLoaded = new Promise<undefined>((resolve) => {
+      finishLoadingDetails = () => resolve(undefined);
+    });
+    harness.ensureDetailsLoaded.mockReturnValue(detailsLoaded);
     await renderApp();
     await waitForApp(() => expect(harness.getWorkflowWorkbench).toHaveBeenCalledTimes(1));
 
     await act(async () => latestWorkbenchProps().onOpenWorkflow("core-workflow"));
 
+    await waitForApp(() => expect(harness.ensureDetailsLoaded).toHaveBeenCalledTimes(1));
+    expect(harness.workflowFeaturePage).not.toHaveBeenCalled();
+    await act(async () => {
+      finishLoadingDetails?.();
+      await detailsLoaded;
+    });
     await waitForApp(() => expect(harness.workflowFeaturePage).toHaveBeenCalled());
     expect(latestWorkflowFeatureProps().initialRequest).toEqual({ workflowId: "core-workflow" });
     expect(harness.selectWorkflow).not.toHaveBeenCalled();
@@ -418,6 +429,44 @@ describe("App workflow workbench wiring", () => {
     expect(latestWorkflowFeatureProps().initialRequest).toEqual({ createNew: true });
     expect(harness.createWorkflowDraft).not.toHaveBeenCalled();
     expect(harness.selectWorkflow).not.toHaveBeenCalled();
+    expect(harness.setSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("loads automation details before showing all workflows", async () => {
+    let finishLoadingDetails: (() => void) | undefined;
+    const detailsLoaded = new Promise<undefined>((resolve) => {
+      finishLoadingDetails = () => resolve(undefined);
+    });
+    harness.ensureDetailsLoaded.mockReturnValue(detailsLoaded);
+    await renderApp();
+    await waitForApp(() => expect(harness.getWorkflowWorkbench).toHaveBeenCalledTimes(1));
+
+    await act(async () => latestWorkbenchProps().onShowWorkflows());
+
+    await waitForApp(() => expect(harness.ensureDetailsLoaded).toHaveBeenCalledTimes(1));
+    expect(harness.workflowFeaturePage).not.toHaveBeenCalled();
+    await act(async () => {
+      finishLoadingDetails?.();
+      await detailsLoaded;
+    });
+    await waitForApp(() => expect(harness.workflowFeaturePage).toHaveBeenCalled());
+    expect(latestWorkflowFeatureProps().initialRequest).toBeUndefined();
+  });
+
+  it("reports automation detail load failures without leaving the workbench", async () => {
+    harness.ensureDetailsLoaded.mockRejectedValue(new Error("automation details unavailable"));
+    await renderApp();
+    await waitForApp(() => expect(harness.getWorkflowWorkbench).toHaveBeenCalledTimes(1));
+
+    await act(async () => latestWorkbenchProps().onOpenWorkflow("core-workflow"));
+
+    await waitForApp(() => {
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("automation details unavailable");
+    });
+    expect(latestNavigationProps().activePage).toBe("workbench");
+    expect(harness.workflowFeaturePage).not.toHaveBeenCalled();
+    expect(harness.selectWorkflow).not.toHaveBeenCalled();
+    expect(harness.createWorkflowDraft).not.toHaveBeenCalled();
     expect(harness.setSnapshot).not.toHaveBeenCalled();
   });
 });

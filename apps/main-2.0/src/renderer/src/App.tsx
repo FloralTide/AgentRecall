@@ -385,6 +385,18 @@ export function App(): ReactElement {
   } | null>(null);
   const [bulkDeleteBusy, setBulkDeleteBusy] = useState(false);
   const [actionStatus, setActionStatus] = useState<ActionStatus | null>(null);
+  const openWorkflows = useCallback(async (initialRequest?: WorkflowInitialRequest): Promise<void> => {
+    try {
+      await automation.ensureDetailsLoaded();
+      setWorkflowInitialRequest(initialRequest);
+      await navigateToPage("workflows");
+    } catch (error) {
+      setActionStatus({
+        kind: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [automation.ensureDetailsLoaded, navigateToPage]);
   const [summarizing, setSummarizing] = useState(false);
   const [refreshFeedback, setRefreshFeedback] = useState<RefreshFeedback>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1797,23 +1809,13 @@ export function App(): ReactElement {
               workflowsLoading={workbenchWorkflowSnapshot === null}
               workflowsError={workbenchWorkflowError}
               onOpenWorkflow={(workflowId) => {
-                setWorkflowInitialRequest({ workflowId });
-                void navigateToPage("workflows");
+                void openWorkflows({ workflowId });
               }}
               onNewWorkflow={() => {
-                void automation.ensureDetailsLoaded().then(() => {
-                  setWorkflowInitialRequest({ createNew: true });
-                  void navigateToPage("workflows");
-                }).catch((error) => {
-                  setActionStatus({
-                    kind: "error",
-                    message: error instanceof Error ? error.message : String(error),
-                  });
-                });
+                void openWorkflows({ createNew: true });
               }}
               onShowWorkflows={() => {
-                setWorkflowInitialRequest(undefined);
-                void navigateToPage("workflows");
+                void openWorkflows();
               }}
               runtimes={automation.detailsLoaded ? automation.snapshot.runtimes : []}
               runtimeChannels={automation.detailsLoaded ? automation.snapshot.channels : []}
