@@ -206,18 +206,52 @@ export function useSkillsController(language: LanguageMode): {
     });
     try {
       const result = await window.sessionSearch.deleteSkill(skill.path);
-      const [nextSnapshot, nextSyncSnapshot] = await Promise.all([
-        window.sessionSearch.listSkills(),
-        window.sessionSearch.getSkillSyncSnapshot(),
-      ]);
-      setSnapshot(nextSnapshot);
-      setSyncSnapshot(nextSyncSnapshot);
-      const message = t(`Deleted ${result.skillName}.`, `已删除 ${result.skillName}。`);
-      setFeedback({ kind: "success", message });
-      window.setTimeout(() => {
-        setFeedback((current) =>
-          current?.kind === "success" && current.message === message ? null : current);
-      }, 2200);
+      const retainedBackupMessage = result.retainedBackupPaths.length > 0
+        ? t(
+            `Deleted ${result.skillName}, but a staged backup could not be removed. Backup: ${result.retainedBackupPaths.join(", ")}`,
+            `已删除 ${result.skillName}，但暂存备份未能删除。备份位置：${result.retainedBackupPaths.join("、")}`,
+          )
+        : null;
+      if (retainedBackupMessage) {
+        setFeedback({
+          kind: "warning",
+          message: retainedBackupMessage,
+        });
+      }
+      try {
+        const [nextSnapshot, nextSyncSnapshot] = await Promise.all([
+          window.sessionSearch.listSkills(),
+          window.sessionSearch.getSkillSyncSnapshot(),
+        ]);
+        setSnapshot(nextSnapshot);
+        setSyncSnapshot(nextSyncSnapshot);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        setFeedback(retainedBackupMessage
+          ? {
+              kind: "warning",
+              message: `${retainedBackupMessage} ${t(
+                `The Skills list could not be refreshed: ${detail}`,
+                `Skill 列表刷新失败：${detail}`,
+              )}`,
+            }
+          : {
+              kind: "error",
+              message: t(
+                `Deleted ${result.skillName}, but the Skills list could not be refreshed: ${detail}`,
+                `已删除 ${result.skillName}，但 Skill 列表刷新失败：${detail}`,
+              ),
+            });
+        return;
+      }
+      if (!retainedBackupMessage) {
+        const message = t(`Deleted ${result.skillName}.`, `已删除 ${result.skillName}。`);
+        setFeedback({ kind: "success", message });
+        window.setTimeout(() => {
+          setFeedback((current) =>
+            current?.kind === "success" && current.message === message ? null : current);
+        }, 2200);
+      }
     } catch (error) {
       setFeedback({
         kind: "error",

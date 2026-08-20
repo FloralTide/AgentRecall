@@ -39,7 +39,11 @@ export function SkillLibraryDetail({
   targetBusy: boolean;
   language: LanguageMode;
   revealLabel: string;
-  onUpdateTargets: (skill: ManagedSkill, targets: SkillInstallTarget[]) => Promise<void>;
+  onUpdateTargets: (
+    skill: ManagedSkill,
+    targets: SkillInstallTarget[],
+    forceTargets: SkillInstallTarget[],
+  ) => Promise<void>;
   onUpload: (skill: ManagedSkill, force?: boolean) => Promise<SkillSyncUploadOutcome | null>;
   onInstallRemote: (remoteSkillId: string) => Promise<void>;
   onFetchVersion: (remoteSkillId: string) => Promise<RemoteSkill>;
@@ -127,7 +131,7 @@ export function SkillLibraryDetail({
         busy={busy || targetBusy}
         language={language}
         onClose={() => setTargetDialogOpen(false)}
-        onSave={(targets) => onUpdateTargets(skill, targets)}
+        onSave={(targets, forceTargets) => onUpdateTargets(skill, targets, forceTargets)}
       />
     </>
   );

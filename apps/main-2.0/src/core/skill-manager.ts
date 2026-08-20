@@ -70,6 +70,7 @@ export interface SkillProjectSource {
 export interface DeleteInstalledSkillResult {
   deletedPath: string;
   skillName: string;
+  retainedBackupPaths: string[];
 }
 
 export interface InstallRemoteSkillOptions {
@@ -95,6 +96,9 @@ interface SkillRootConfig {
   source: SkillSource;
   path: string;
 }
+
+const MANAGED_SKILL_BACKUP_DIRECTORY_PATTERN =
+  /^\..+\.agent-recall-backup-(?:[1-9][0-9]*-)?[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export function listInstalledSkills(options: SkillManagerOptions = {}): InstalledSkillsSnapshot {
   const homeDir = options.homeDir || os.homedir();
@@ -228,7 +232,7 @@ export function deleteInstalledSkill(skillPath: string, options: SkillManagerOpt
   }
 
   fs.rmSync(directoryPath, { recursive: true, force: false });
-  return { deletedPath: directoryPath, skillName: skill.name };
+  return { deletedPath: directoryPath, skillName: skill.name, retainedBackupPaths: [] };
 }
 
 export function installRemoteSkillLocally(remoteSkill: RemoteSkill, options: InstallRemoteSkillOptions = {}): InstallRemoteSkillResult {
@@ -411,6 +415,7 @@ function readSkillsFromRoot(root: SkillRootConfig): InstalledSkill[] {
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       if (!entry.isDirectory()) continue;
       if (directoryPath === root.path && entry.name === ".system") continue;
+      if (isManagedSkillBackupDirectoryName(entry.name)) continue;
       const childPath = path.join(directoryPath, entry.name);
       const skill = readSkillFile(path.join(childPath, "SKILL.md"), entry.name, root);
       if (skill) skills.push(skill);
@@ -419,6 +424,10 @@ function readSkillsFromRoot(root: SkillRootConfig): InstalledSkill[] {
   };
   visit(root.path);
   return skills;
+}
+
+function isManagedSkillBackupDirectoryName(name: string): boolean {
+  return MANAGED_SKILL_BACKUP_DIRECTORY_PATTERN.test(name);
 }
 
 function ensurePortableInstallTarget(rootPath: string, directoryPath: string): void {

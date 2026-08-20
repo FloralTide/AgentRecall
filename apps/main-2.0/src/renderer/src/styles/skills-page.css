@@ -205,6 +205,11 @@
   color: var(--success-text);
 }
 
+.managed-skills-feedback.warning {
+  background: color-mix(in srgb, var(--warning, #b7791f) 12%, var(--panel-bg));
+  color: var(--warning, #b7791f);
+}
+
 .managed-skills-batch-bar {
   min-height: 38px;
   flex: 0 0 auto;
@@ -696,9 +701,10 @@
   background: var(--accent-soft);
 }
 
-.managed-skill-target-options > button.selected.conflict {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  background: var(--accent-soft);
+.managed-skill-target-options > button.force-selected {
+  border-color: color-mix(in srgb, var(--danger) 72%, var(--border));
+  background: color-mix(in srgb, var(--danger-soft) 72%, var(--panel-bg));
+  box-shadow: inset 3px 0 0 var(--danger);
 }
 
 .managed-skill-target-option-icon {
@@ -721,9 +727,15 @@
   color: var(--accent-contrast);
 }
 
-.managed-skill-target-options > button > span:last-child {
+.managed-skill-target-options > button.force-selected .managed-skill-target-option-icon {
+  background: var(--danger);
+  color: white;
+}
+
+.managed-skill-target-option-copy {
   display: grid;
   min-width: 0;
+  flex: 1;
   gap: 2px;
 }
 
@@ -738,6 +750,24 @@
 .managed-skill-target-options small {
   color: var(--text-muted);
   font-size: 9.5px;
+}
+
+.managed-skill-target-force-action {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border: 1px solid color-mix(in srgb, var(--danger) 52%, var(--border));
+  border-radius: 5px;
+  color: var(--danger);
+  font-size: 9px;
+  font-weight: 680;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.managed-skill-target-options > button.force-selected .managed-skill-target-force-action {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: white;
 }
 
 .managed-skill-document {

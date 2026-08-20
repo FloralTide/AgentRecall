@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SKILL_INSTALL_TARGETS, type SkillInstallTarget } from "../../core/agent-skill-registry";
 import { defineIpcRequest } from "./contract";
 
 const noInput = z.tuple([]);
@@ -9,8 +10,18 @@ const pathListInput = z.array(pathInput).min(1).max(500);
 const managedSkillIdInput = z.string().trim().min(1).max(80)
   .regex(/^[a-z0-9._-]+$/)
   .refine((value) => value !== "." && value !== "..", "Invalid managed Skill id.");
-const installTargetInput = z.enum(["codex", "claude", "codebuddy", "qoder", "trae"]);
-const installTargetsInput = z.array(installTargetInput).max(installTargetInput.options.length);
+const installTargetInput = z.enum(SKILL_INSTALL_TARGETS);
+const installTargetsInput = z.array(installTargetInput).max(SKILL_INSTALL_TARGETS.length);
+const updateTargetsInput = z
+  .union([
+    z.tuple([managedSkillIdInput, installTargetsInput]),
+    z.tuple([managedSkillIdInput, installTargetsInput, installTargetsInput]),
+  ])
+  .transform((input): [string, SkillInstallTarget[], SkillInstallTarget[]] => [
+    input[0],
+    input[1],
+    input[2] ?? [],
+  ]);
 const discoveryQueryInput = z.object({
   page: z.number().int().min(0).max(10_000),
   query: z.string().max(500).transform((value) => value.trim()),
@@ -78,7 +89,7 @@ export const SKILLS_IPC = {
   list: defineIpcRequest("skills:list", noInput),
   listImportCandidates: defineIpcRequest("skills:import-candidates", optionalRefreshInput),
   importLocal: defineIpcRequest("skills:import-local", z.tuple([pathListInput])),
-  updateTargets: defineIpcRequest("skills:update-targets", z.tuple([managedSkillIdInput, installTargetsInput])),
+  updateTargets: defineIpcRequest("skills:update-targets", updateTargetsInput),
   listDiscovered: defineIpcRequest("skills:discover-list", z.tuple([discoveryQueryInput])),
   aiSearchDiscovered: defineIpcRequest("skills:discover-ai-search", z.tuple([aiDiscoveryInput])),
   getDiscovered: defineIpcRequest("skills:discover-detail", z.tuple([discoveredSkillIdInput])),

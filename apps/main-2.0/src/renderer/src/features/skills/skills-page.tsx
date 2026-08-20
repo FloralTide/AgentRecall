@@ -91,7 +91,7 @@ export function SkillsPage({
   const [deleteCandidate, setDeleteCandidate] = useState<ManagedSkill | null>(null);
   const [targetBusy, setTargetBusy] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
-  const [appFeedback, setAppFeedback] = useState<{ kind: "success" | "error"; message: string } | null>(null);
+  const [appFeedback, setAppFeedback] = useState<{ kind: "success" | "warning" | "error"; message: string } | null>(null);
   const [pendingSelection, setPendingSelection] = useState<string | null>(null);
   const filteredSkills = useMemo(
     () => filterManagedSkills(managedSkills, query, originFilter, sort),
@@ -151,18 +151,32 @@ export function SkillsPage({
     onRefresh();
   };
 
-  const updateTargets = async (skill: ManagedSkill, targets: SkillInstallTarget[]) => {
+  const updateTargets = async (
+    skill: ManagedSkill,
+    targets: SkillInstallTarget[],
+    forceTargets: SkillInstallTarget[],
+  ) => {
     setTargetBusy(true);
     setAppFeedback(null);
     try {
-      await window.sessionSearch.updateManagedSkillTargets(skill.managedId, targets);
+      const updated = await window.sessionSearch.updateManagedSkillTargets(skill.managedId, targets, forceTargets);
       setPendingSelection(skill.managedId);
-      setAppFeedback({
-        kind: "success",
-        message: targets.length > 0
-          ? l(`${skill.name} installation was updated.`, `${skill.name} 的安装位置已更新。`)
-          : l(`${skill.name} was removed from every agent.`, `${skill.name} 已从所有 Agent 移除。`),
-      });
+      if (updated.retainedBackupPaths.length > 0) {
+        setAppFeedback({
+          kind: "warning",
+          message: l(
+            `${skill.name} installation was updated, but a staged backup could not be removed. Backup: ${updated.retainedBackupPaths.join(", ")}`,
+            `${skill.name} 的安装位置已更新，但暂存备份未能删除。备份位置：${updated.retainedBackupPaths.join("、")}`,
+          ),
+        });
+      } else {
+        setAppFeedback({
+          kind: "success",
+          message: targets.length > 0
+            ? l(`${skill.name} installation was updated.`, `${skill.name} 的安装位置已更新。`)
+            : l(`${skill.name} was removed from every agent.`, `${skill.name} 已从所有 Agent 移除。`),
+        });
+      }
       onRefresh();
     } catch (error) {
       setAppFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });

@@ -14,10 +14,10 @@ import type {
 import { runSkillAiSearch, type SkillAiSearchResult } from "../../core/skill-ai-search";
 import {
   ManagedSkillLibrary,
-  type ManagedSkill,
   type ManagedSkillFileImport,
   type ManagedSkillImportResult,
   type ManagedSkillsSnapshot,
+  type ManagedSkillTargetUpdateResult,
   type SkillInstallTarget,
 } from "../../core/managed-skill-library";
 import {
@@ -211,7 +211,11 @@ export interface ManagedSkillLibraryPort {
   ensureBuiltinSkills(bundledSkillsPath: string): void;
   importFiles(input: ManagedSkillFileImport): ManagedSkillImportResult;
   replaceFiles(input: ManagedSkillFileImport): ManagedSkillImportResult;
-  updateTargets(managedId: string, targets: SkillInstallTarget[]): ManagedSkill;
+  updateTargets(
+    managedId: string,
+    targets: SkillInstallTarget[],
+    forceTargets?: SkillInstallTarget[],
+  ): ManagedSkillTargetUpdateResult;
   delete(managedId: string): DeleteInstalledSkillResult;
 }
 
@@ -371,9 +375,13 @@ export class SkillService {
     return this.uniqueValues(skillPaths).map((skillPath) => this.managedLibrary!.importLocalSkill(skillPath, projectDirs));
   }
 
-  updateManagedSkillTargets(managedId: string, targets: SkillInstallTarget[]): ManagedSkill {
+  updateManagedSkillTargets(
+    managedId: string,
+    targets: SkillInstallTarget[],
+    forceTargets: SkillInstallTarget[] = [],
+  ): ManagedSkillTargetUpdateResult {
     if (!this.managedLibrary) throw new Error("The managed Skill library is unavailable.");
-    return this.managedLibrary.updateTargets(managedId, targets);
+    return this.managedLibrary.updateTargets(managedId, targets, forceTargets);
   }
 
   async listDiscoveredSkills(input: { page: number; query: string }): Promise<SkillsShPage> {
