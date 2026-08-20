@@ -956,6 +956,29 @@ describe("summary connection tests", () => {
 });
 
 describe("ProviderService Codex Chat proxy lifecycle", () => {
+  it("keeps helper-backed apply from promoting a generic resolver fallback into the API key field", async () => {
+    const harness = createHarness();
+    vi.mocked(harness.operations.resolveCodexProviderCredential).mockImplementation(async (input) => (
+      input.preferConfiguredHelper
+        ? { apiKey: "", source: "config.toml deepseek.auth.command" }
+        : { apiKey: "unrelated-login-key", source: "auth.json OPENAI_API_KEY" }
+    ));
+
+    await harness.service.applyCodexProfile(customCodexConfig({
+      customApiKey: "",
+      customApiFormat: "openai_responses",
+    }));
+
+    expect(harness.operations.resolveCodexProviderCredential).toHaveBeenCalledWith({
+      codexHome: undefined,
+      providerId: "deepseek",
+      preferConfiguredHelper: true,
+    });
+    expect(harness.operations.applyCodexApiConfig).toHaveBeenCalledWith({
+      apiConfig: expect.objectContaining({ customApiKey: "" }),
+    });
+  });
+
   it("reuses an identical proxy and replaces it only when its effective config changes", async () => {
     const harness = createHarness();
     const config = customCodexConfig();

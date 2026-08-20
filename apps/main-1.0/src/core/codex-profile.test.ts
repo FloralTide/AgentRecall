@@ -325,6 +325,7 @@ describe("codex profile switching", () => {
 
   it("detects command-backed Codex auth without running the helper during snapshots", async () => {
     await withCodexHome(async (codexHome) => {
+      await writeFile(path.join(codexHome, "auth.json"), '{"OPENAI_API_KEY":"unrelated-login-key"}\n');
       await writeFile(
         path.join(codexHome, "config.toml"),
         [
@@ -389,6 +390,82 @@ describe("codex profile switching", () => {
       })).resolves.toEqual({
         apiKey: "auth-file-key",
         source: "auth.json OPENAI_API_KEY",
+      });
+    });
+  });
+
+  it("can keep configured command auth authoritative without executing it or borrowing past it", async () => {
+    await withCodexHome(async (codexHome) => {
+      await writeFile(
+        path.join(codexHome, "config.toml"),
+        [
+          "[model_providers.gateway]",
+          "",
+          "[model_providers.gateway.auth]",
+          'command = "agent-recall-helper-must-not-run"',
+        ].join("\n"),
+      );
+      await writeFile(path.join(codexHome, "auth.json"), '{"OPENAI_API_KEY":"unrelated-login-key"}\n');
+
+      await expect(resolveCodexProviderCredential({
+        codexHome,
+        providerId: "gateway",
+        executeCredentialHelper: false,
+        preferConfiguredHelper: true,
+      })).resolves.toMatchObject({
+        apiKey: "",
+        source: "config.toml gateway.auth.command",
+      });
+
+      await writeFile(
+        path.join(codexHome, "config.toml"),
+        [
+          'model_provider = "gateway"',
+          "",
+          "[model_providers.gateway]",
+          "",
+          "[model_providers.gateway.auth]",
+          'command = "agent-recall-helper-must-not-run"',
+          "",
+          "[model_providers.sibling]",
+          'api_key = "sibling-key"',
+        ].join("\n"),
+      );
+      await writeFile(path.join(codexHome, "auth.json"), "{}\n");
+
+      await expect(resolveCodexProviderCredential({
+        codexHome,
+        providerId: "manual-route",
+        executeCredentialHelper: false,
+        preferConfiguredHelper: true,
+      })).resolves.toEqual({
+        apiKey: "",
+        source: null,
+      });
+    });
+  });
+
+  it("does not report a sibling provider helper as official-route authentication", async () => {
+    await withCodexHome(async (codexHome) => {
+      await writeFile(
+        path.join(codexHome, "config.toml"),
+        [
+          'model_provider = "openai"',
+          "",
+          "[model_providers.gateway]",
+          "",
+          "[model_providers.gateway.auth]",
+          'command = "agent-recall-helper-must-not-run"',
+          "",
+          "[model_providers.sibling]",
+          'api_key = "sibling-key"',
+        ].join("\n"),
+      );
+
+      await expect(loadCodexConfigSnapshot(codexHome)).resolves.toMatchObject({
+        activeProviderId: "openai",
+        hasApiKey: false,
+        credentialSource: null,
       });
     });
   });
@@ -1135,6 +1212,7 @@ describe("loadActiveCodexSummaryEndpointDefaults", () => {
         `cwd = ${JSON.stringify(codexHome)}`,
       ].join("\n"),
     );
+    writeFileSync(path.join(codexHome, "auth.json"), '{"OPENAI_API_KEY":"unrelated-login-key"}\n');
 
     await expect(loadActiveCodexSummaryEndpointDefaults(codexHome)).resolves.toBeNull();
     await expect(readFile(customMarker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
@@ -1158,6 +1236,7 @@ describe("loadActiveCodexSummaryEndpointDefaults", () => {
         `cwd = ${JSON.stringify(codexHome)}`,
       ].join("\n"),
     );
+    writeFileSync(path.join(codexHome, "auth.json"), "{}\n");
 
     await expect(loadActiveCodexSummaryEndpointDefaults(codexHome)).resolves.toBeNull();
     await expect(readFile(borrowedMarker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });

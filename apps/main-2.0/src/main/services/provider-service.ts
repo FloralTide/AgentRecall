@@ -740,6 +740,7 @@ export class ProviderService {
     const credential = await this.operations.resolveCodexProviderCredential({
       codexHome: apiConfig.customConfigDir || undefined,
       providerId: apiConfig.customProviderId,
+      preferConfiguredHelper: true,
     });
     return credential.apiKey ? { ...apiConfig, customApiKey: credential.apiKey } : apiConfig;
   }

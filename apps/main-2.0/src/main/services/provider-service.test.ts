@@ -57,6 +57,17 @@ function createHarness(settings: AppSettings = cloneSettings()) {
       source: apiKey ? "API key field" : null,
     })),
     requestSummaryCompletion: vi.fn(async () => "OK"),
+    applyCodexApiConfig: vi.fn(async () => ({
+      profile: "generated",
+      codexHome: "/tmp/codex",
+      authSource: null,
+      configSource: null,
+      authTarget: "/tmp/codex/auth.json",
+      configTarget: "/tmp/codex/config.toml",
+      backupPaths: [],
+      credentialSource: "config.toml deepseek.auth.command",
+      verified: true as const,
+    })),
   };
   const service = new ProviderService({
     getSettings: () => settings,
@@ -688,6 +699,37 @@ describe("Provider connection tests", () => {
     })).rejects.toThrow(/Write this route to Claude Code settings/);
     expect(harness.operations.resolveClaudeProviderCredential).not.toHaveBeenCalled();
     expect(harness.operations.requestSummaryCompletion).not.toHaveBeenCalled();
+  });
+});
+
+describe("ProviderService Codex profile", () => {
+  it("keeps helper-backed apply from promoting a generic resolver fallback into the API key field", async () => {
+    const harness = createHarness();
+    vi.mocked(harness.operations.resolveCodexProviderCredential!).mockImplementation(async (input) => (
+      input.preferConfiguredHelper
+        ? { apiKey: "", source: "config.toml deepseek.auth.command" }
+        : { apiKey: "unrelated-login-key", source: "auth.json OPENAI_API_KEY" }
+    ));
+
+    await harness.service.applyCodexProfile({
+      ...defaultSettings.apiConfig,
+      activeProvider: "custom",
+      customProviderId: "deepseek",
+      customProviderName: "DeepSeek",
+      customBaseUrl: "https://api.deepseek.com",
+      customApiKey: "",
+      customModel: "deepseek-v4-flash",
+      customApiFormat: "openai_responses",
+    });
+
+    expect(harness.operations.resolveCodexProviderCredential).toHaveBeenCalledWith({
+      codexHome: undefined,
+      providerId: "deepseek",
+      preferConfiguredHelper: true,
+    });
+    expect(harness.operations.applyCodexApiConfig).toHaveBeenCalledWith({
+      apiConfig: expect.objectContaining({ customApiKey: "" }),
+    });
   });
 });
 

@@ -146,6 +146,7 @@ export async function loadCodexConfigSnapshot(configuredHome?: string): Promise<
       providerId: provider.id,
       allowOtherProviders: false,
       executeCredentialHelper: false,
+      preferConfiguredHelper: true,
     });
     return {
       ...provider,
@@ -167,6 +168,7 @@ export async function loadCodexConfigSnapshot(configuredHome?: string): Promise<
     configText: text,
     providerId: activeProviderId,
     executeCredentialHelper: false,
+    preferConfiguredHelper: true,
   });
   return {
     codexHome,
@@ -204,6 +206,8 @@ export async function resolveCodexProviderCredential(input: {
   apiKeySource?: string;
   /** Opt in only for an operation that may execute the provider's configured auth command. */
   executeCredentialHelper?: boolean;
+  /** Keep configured command auth authoritative instead of resolving generic fallback keys. */
+  preferConfiguredHelper?: boolean;
 }): Promise<CodexCredentialResolution> {
   const codexHome = resolveProviderConfigDirectory(input.codexHome, ".codex");
   const configText = await readOptionalFile(path.join(codexHome, "config.toml"));
@@ -215,6 +219,7 @@ export async function resolveCodexProviderCredential(input: {
     explicitKey: input.apiKey,
     explicitSource: input.apiKeySource,
     executeCredentialHelper: input.executeCredentialHelper ?? false,
+    preferConfiguredHelper: input.preferConfiguredHelper ?? false,
   });
 }
 
@@ -228,6 +233,7 @@ export async function loadActiveCodexSummaryEndpointDefaults(codexHome?: string)
       codexHome: home,
       configText: text,
       executeCredentialHelper: false,
+      preferConfiguredHelper: true,
     });
     return credential.apiKey
       ? { baseUrl: "", model, apiKey: credential.apiKey, apiFormat: "openai_responses" }
@@ -244,6 +250,7 @@ export async function loadActiveCodexSummaryEndpointDefaults(codexHome?: string)
     providerId,
     envKey,
     executeCredentialHelper: false,
+    preferConfiguredHelper: true,
   });
   const apiKey = credential.apiKey;
   if (!baseUrl || !model || !apiKey) return null;
@@ -294,6 +301,8 @@ async function resolveCodexCredential(options: {
   allowOtherProviders?: boolean;
   /** Provider-owned commands run only when the caller explicitly opts in. */
   executeCredentialHelper?: boolean;
+  /** Do not let readable fallback credentials hide a configured provider helper. */
+  preferConfiguredHelper?: boolean;
 }): Promise<ResolvedCodexCredential> {
   const explicitKey = options.explicitKey?.trim() ?? "";
   if (explicitKey) return { apiKey: explicitKey, source: options.explicitSource || "API key field" };
@@ -304,6 +313,9 @@ async function resolveCodexCredential(options: {
     const source = `config.toml ${options.providerId}.auth.command`;
     if (options.executeCredentialHelper !== true) {
       configuredCommandSource = source;
+      if (options.preferConfiguredHelper) {
+        return { apiKey: "", source, configured: true };
+      }
     } else {
       return {
         apiKey: await runProviderCredentialCommand(commandAuth),
@@ -367,6 +379,7 @@ async function borrowCodexCredentialFromOtherProviders(options: {
   configText: string;
   providerId?: string;
   executeCredentialHelper?: boolean;
+  preferConfiguredHelper?: boolean;
 }): Promise<ResolvedCodexCredential> {
   const activeProviderId = readTopLevelTomlString(options.configText, "model_provider") || "";
   const candidates = [
@@ -382,8 +395,12 @@ async function borrowCodexCredentialFromOtherProviders(options: {
       providerId: candidate,
       allowOtherProviders: false,
       executeCredentialHelper: options.executeCredentialHelper,
+      preferConfiguredHelper: options.preferConfiguredHelper,
     });
     if (credential.apiKey) return { apiKey: credential.apiKey, source: `${credential.source} (provider ${candidate})` };
+    // A helper is scoped to its own provider. It blocks borrowing credentials from
+    // providers behind it, but must not make the requested route look authenticated.
+    if (credential.configured) return { apiKey: "", source: null };
   }
   return { apiKey: "", source: null };
 }
