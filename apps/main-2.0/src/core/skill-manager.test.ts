@@ -20,8 +20,8 @@ describe("listInstalledSkills", () => {
     temporaryDirectories.push(homeDir);
     const codexHome = path.join(homeDir, ".codex");
     const skillsRoot = path.join(codexHome, "skills");
-    const backupUuid = "123e4567-e89b-12d3-a456-426614174000";
-    const nestedBackupUuid = "223e4567-e89b-12d3-a456-426614174000";
+    const backupUuid = "123e4567-e89b-42d3-a456-426614174000";
+    const nestedBackupUuid = "223e4567-e89b-42d3-a456-426614174000";
 
     writeSkill(
       path.join(skillsRoot, `.managed-skill.agent-recall-backup-${backupUuid}`),
@@ -31,10 +31,22 @@ describe("listInstalledSkills", () => {
       path.join(skillsRoot, `.nested-backup.agent-recall-backup-${nestedBackupUuid}`, "child"),
       "Nested inside root backup",
     );
+    writeSkill(
+      path.join(skillsRoot, `.Remote-Skill.agent-recall-backup-4321-${backupUuid}`),
+      "PID backup",
+    );
     writeSkill(path.join(skillsRoot, ".hidden-skill"), "Hidden Skill");
     writeSkill(
       path.join(skillsRoot, ".similar.agent-recall-backup-not-a-uuid"),
       "Similar non-backup Skill",
+    );
+    writeSkill(
+      path.join(skillsRoot, ".similar.agent-recall-backup-123e4567-e89b-12d3-a456-426614174000"),
+      "Non-v4 backup-like Skill",
+    );
+    writeSkill(
+      path.join(skillsRoot, ".similar.agent-recall-backup-123E4567-E89B-42D3-A456-426614174000"),
+      "Uppercase backup-like Skill",
     );
     writeSkill(
       path.join(skillsRoot, "collection", `.nested.agent-recall-backup-${backupUuid}`),
@@ -51,11 +63,14 @@ describe("listInstalledSkills", () => {
     expect(snapshot.skills.map((skill) => skill.name)).toEqual([
       "Hidden Skill",
       "Nested reserved-like Skill",
+      "Non-v4 backup-like Skill",
       "Similar non-backup Skill",
+      "Uppercase backup-like Skill",
     ]);
     expect(snapshot.skills.some((skill) => skill.name === "Root backup")).toBe(false);
     expect(snapshot.skills.some((skill) => skill.name === "Nested inside root backup")).toBe(false);
-    expect(snapshot.roots.find((root) => root.source === "codex-user")?.skillCount).toBe(3);
+    expect(snapshot.skills.some((skill) => skill.name === "PID backup")).toBe(false);
+    expect(snapshot.roots.find((root) => root.source === "codex-user")?.skillCount).toBe(5);
   });
 });
 

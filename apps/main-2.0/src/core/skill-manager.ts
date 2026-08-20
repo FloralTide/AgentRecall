@@ -97,7 +97,7 @@ interface SkillRootConfig {
 }
 
 const MANAGED_SKILL_BACKUP_DIRECTORY_PATTERN =
-  /^\.([a-z0-9._-]{1,80})\.agent-recall-backup-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+  /^\..+\.agent-recall-backup-(?:[1-9][0-9]*-)?[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export function listInstalledSkills(options: SkillManagerOptions = {}): InstalledSkillsSnapshot {
   const homeDir = options.homeDir || os.homedir();
@@ -426,8 +426,7 @@ function readSkillsFromRoot(root: SkillRootConfig): InstalledSkill[] {
 }
 
 function isManagedSkillBackupDirectoryName(name: string): boolean {
-  const managedId = name.match(MANAGED_SKILL_BACKUP_DIRECTORY_PATTERN)?.[1];
-  return Boolean(managedId && managedId !== "." && managedId !== "..");
+  return MANAGED_SKILL_BACKUP_DIRECTORY_PATTERN.test(name);
 }
 
 function ensurePortableInstallTarget(rootPath: string, directoryPath: string): void {

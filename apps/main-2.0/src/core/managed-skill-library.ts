@@ -444,12 +444,10 @@ export class ManagedSkillLibrary {
     if (normalizedId !== managedId) throw new Error("Unsafe managed Skill id.");
     const skill = this.requireManagedSkill(normalizedId);
     const ownedInstallations = new Map<string, ManagedSkillInstallation>();
-    for (const installation of skill.installations) {
-      if (installation.state !== "installed") continue;
-      const verified = this.inspectInstallation(normalizedId, installation.target);
-      if (verified.state !== "installed") {
-        throw new Error(`Refusing to remove a ${installation.target} Skill link that is no longer owned by AgentRecall.`);
-      }
+    for (const target of INSTALL_TARGETS) {
+      const verified = this.inspectInstallation(normalizedId, target, true);
+      if (verified.state !== "installed") continue;
+      const installation = skill.installations.find((candidate) => candidate.target === target)!;
       const physicalPath = comparablePath(physicalEntryPath(installation.path), this.platform);
       if (!ownedInstallations.has(physicalPath)) ownedInstallations.set(physicalPath, installation);
     }
@@ -574,12 +572,17 @@ export class ManagedSkillLibrary {
     }
   }
 
-  private inspectInstallation(managedId: string, target: SkillInstallTarget): ManagedSkillInstallation {
+  private inspectInstallation(
+    managedId: string,
+    target: SkillInstallTarget,
+    strict = false,
+  ): ManagedSkillInstallation {
     const targetPath = this.installTargetPath(managedId, target);
     let stat: fs.Stats;
     try {
       stat = fs.lstatSync(targetPath);
     } catch (error) {
+      if (strict && !isMissingPathError(error)) throw error;
       return {
         target,
         path: targetPath,

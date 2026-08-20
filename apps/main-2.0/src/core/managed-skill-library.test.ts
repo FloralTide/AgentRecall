@@ -89,6 +89,17 @@ function replaceRenameSync(replacement: typeof fs.renameSync): () => void {
   };
 }
 
+function replaceLstatSync(replacement: typeof fs.lstatSync): () => void {
+  const mutableLstatFs = mutableFs as unknown as { lstatSync: typeof fs.lstatSync };
+  const original = mutableLstatFs.lstatSync;
+  mutableLstatFs.lstatSync = replacement;
+  syncBuiltinESMExports();
+  return () => {
+    mutableLstatFs.lstatSync = original;
+    syncBuiltinESMExports();
+  };
+}
+
 describe("AgentRecall bundled Skills", () => {
   it("ships aihot as an official built-in Skill", () => {
     expect(AGENT_RECALL_BUILTIN_SKILLS).toContainEqual({
@@ -279,6 +290,34 @@ describe("ManagedSkillLibrary conflicting installation targets", () => {
     expect(fs.existsSync(sharedTargetPath)).toBe(false);
     expect(fs.existsSync(fixture.managedSkillPath)).toBe(false);
     expect(fixture.library.list().skills).toEqual([]);
+  });
+
+  it("refuses to delete a managed Skill when an installed target cannot be inspected", () => {
+    const fixture = createManagedSkillFixture();
+    const targetPath = path.join(fixture.homeDir, ".codex", "skills", fixture.managedId);
+    fixture.library.updateTargets(fixture.managedId, ["codex"]);
+    const originalLstatSync = mutableFs.lstatSync;
+    const restoreLstatSync = replaceLstatSync(((
+      inspectedPath: fs.PathLike,
+      options?: fs.StatOptions,
+    ) => {
+      if (path.resolve(String(inspectedPath)) === path.resolve(targetPath)) {
+        const error = new Error("simulated access denied") as NodeJS.ErrnoException;
+        error.code = "EACCES";
+        throw error;
+      }
+      return originalLstatSync(inspectedPath, options);
+    }) as typeof fs.lstatSync);
+
+    try {
+      expect(() => fixture.library.delete(fixture.managedId)).toThrow("simulated access denied");
+    } finally {
+      restoreLstatSync();
+    }
+
+    expect(fs.lstatSync(targetPath).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(targetPath)).toBe(fs.realpathSync(fixture.managedSkillPath));
+    expect(fs.existsSync(path.join(fixture.managedSkillPath, "SKILL.md"))).toBe(true);
   });
 
   it("creates one shared physical link when every alias is selected", () => {
