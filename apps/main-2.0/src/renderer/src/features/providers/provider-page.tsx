@@ -31,6 +31,16 @@ function hasSavedCustomRoute(
     && Boolean(config.customBaseUrl.trim() || config.customModel.trim() || config.customApiKey.trim());
 }
 
+function providerTargetMatches(
+  config: Pick<ApiConfig | ClaudeApiConfig, "activeProvider" | "customProviderId" | "customBaseUrl"> | null | undefined,
+  providerId: string,
+  baseUrl: string,
+): boolean {
+  return config?.activeProvider === "custom"
+    && config.customProviderId === providerId
+    && normalizeProviderBaseUrl(config.customBaseUrl) === normalizeProviderBaseUrl(baseUrl);
+}
+
 function buildSummaryDraftFromSettings(settings: AppSettings | null): ApiConfig {
   return settings?.summaryApiConfig ?? { ...defaultApiConfig };
 }
@@ -84,12 +94,14 @@ export function ProviderPage({
   const [codexModelOptions, setCodexModelOptions] = useState<string[]>([]);
   const [codexModelMenuOpen, setCodexModelMenuOpen] = useState(false);
   const [codexModelProbeStatus, setCodexModelProbeStatus] = useState<SettingsFeedback>(null);
+  const [codexConnectionStatus, setCodexConnectionStatus] = useState<SettingsFeedback>(null);
   const [claudeConfig, setClaudeConfig] = useState<ClaudeConfigSnapshot | null>(null);
   const [claudeConfigError, setClaudeConfigError] = useState("");
   const [selectedClaudeConfigRoute, setSelectedClaudeConfigRoute] = useState("");
   const [claudeModelOptions, setClaudeModelOptions] = useState<string[]>([]);
   const [claudeModelMenuOpen, setClaudeModelMenuOpen] = useState(false);
   const [claudeModelProbeStatus, setClaudeModelProbeStatus] = useState<SettingsFeedback>(null);
+  const [claudeConnectionStatus, setClaudeConnectionStatus] = useState<SettingsFeedback>(null);
   const [summaryModelOptions, setSummaryModelOptions] = useState<string[]>([]);
   const [summaryModelMenuOpen, setSummaryModelMenuOpen] = useState(false);
   const [summaryModelProbeStatus, setSummaryModelProbeStatus] = useState<SettingsFeedback>(null);
@@ -104,8 +116,16 @@ export function ProviderPage({
   const summaryApiPresetSelectionRef = useRef(0);
   const codexConfigHydrationRef = useRef("");
   const claudeConfigHydrationRef = useRef("");
+  const codexConnectionTestIdRef = useRef(0);
+  const claudeConnectionTestIdRef = useRef(0);
   const updateDraftApiConfig = (next: Partial<ApiConfig>) => setDraftApiConfig((current) => ({ ...current, ...next }));
   const updateDraftClaudeApiConfig = (next: Partial<ClaudeApiConfig>) => setDraftClaudeApiConfig((current) => ({ ...current, ...next }));
+  const codexConnectionSignature = JSON.stringify(draftApiConfig);
+  const claudeConnectionSignature = JSON.stringify(draftClaudeApiConfig);
+  const codexConnectionSignatureRef = useRef(codexConnectionSignature);
+  const claudeConnectionSignatureRef = useRef(claudeConnectionSignature);
+  codexConnectionSignatureRef.current = codexConnectionSignature;
+  claudeConnectionSignatureRef.current = claudeConnectionSignature;
   const updateDraftSummaryApiConfig = (next: Partial<ApiConfig>) => setDraftSummaryApiConfig((current) => ({ ...current, ...next }));
   const selectedPreset = API_PROVIDER_PRESETS.find((preset) => preset.id === draftApiConfig.customProviderId);
   const customName = selectedPreset?.label ?? (draftApiConfig.customProviderName || "Custom");
@@ -132,21 +152,26 @@ export function ProviderPage({
     const activeProvider = snapshot.providers.find((provider) => provider.id === snapshot.activeProviderId);
     if (!activeProvider || snapshot.activeProviderId === "openai") {
       setSelectedCodexConfigProviderId("");
-      setDraftApiConfig((current) => ({ ...current, activeProvider: "official" }));
+      setDraftApiConfig((current) => ({ ...current, activeProvider: "official", customApiKey: "" }));
       return;
     }
     const preset = API_PROVIDER_PRESETS.find(
       (item) => item.id !== "custom" && (item.id === activeProvider.id || normalizeProviderBaseUrl(item.baseUrl) === normalizeProviderBaseUrl(activeProvider.baseUrl)),
     );
+    const nextProviderId = preset?.id ?? activeProvider.id;
+    const nextBaseUrl = activeProvider.baseUrl || preset?.baseUrl || "";
     setSelectedCodexConfigProviderId(preset ? "" : activeProvider.id);
     setDraftApiConfig((current) => ({
       ...current,
       activeProvider: "custom",
       // A preset match must keep the preset's own id, otherwise the preset button stops
       // looking selected and the stored key is looked up under the wrong name.
-      customProviderId: preset?.id ?? activeProvider.id,
+      customProviderId: nextProviderId,
       customProviderName: preset?.providerName ?? activeProvider.name ?? activeProvider.id,
-      customBaseUrl: activeProvider.baseUrl || preset?.baseUrl || current.customBaseUrl,
+      customBaseUrl: nextBaseUrl || current.customBaseUrl,
+      customApiKey: Boolean(nextBaseUrl) && providerTargetMatches(current, nextProviderId, nextBaseUrl)
+        ? current.customApiKey
+        : "",
       customModel: snapshot.activeModel || preset?.model || current.customModel,
       customApiFormat: activeProvider.wireApi === "chat" ? "openai_chat" : preset?.apiFormat ?? "openai_responses",
     }));
@@ -156,17 +181,21 @@ export function ProviderPage({
     `${snapshot.configPath}:${snapshot.activeProviderId}:${snapshot.activeModel}:${snapshot.providers.map((provider) => `${provider.id}:${provider.baseUrl}`).join("|")}`;
 
   const claudeConfigHydrationKey = (snapshot: ClaudeConfigSnapshot) =>
-    `${snapshot.settingsPath}:${snapshot.route.activeProvider}:${snapshot.route.customBaseUrl}:${snapshot.route.customModel}`;
+    `${snapshot.settingsPath}:${snapshot.route.activeProvider}:${snapshot.route.customProviderId}:${snapshot.route.customBaseUrl}:${snapshot.route.customModel}`;
 
   const hydrateDraftFromClaudeConfig = (snapshot: ClaudeConfigSnapshot, configDir?: string) => {
     if (snapshot.route.activeProvider !== "custom") return;
     setSelectedClaudeConfigRoute("config");
-    setDraftClaudeApiConfig((current) => ({
-      ...current,
-      ...snapshot.route,
-      customConfigDir: configDir ?? current.customConfigDir,
-      customApiKey: current.customApiKey,
-    }));
+    setDraftClaudeApiConfig((current) => {
+      const nextProviderId = snapshot.route.customProviderId ?? current.customProviderId;
+      const nextBaseUrl = snapshot.route.customBaseUrl ?? current.customBaseUrl;
+      return {
+        ...current,
+        ...snapshot.route,
+        customConfigDir: configDir ?? current.customConfigDir,
+        customApiKey: providerTargetMatches(current, nextProviderId, nextBaseUrl) ? current.customApiKey : "",
+      };
+    });
   };
 
   const selectClaudeConfigRoute = (useConfigRoute: boolean) => {
@@ -184,21 +213,34 @@ export function ProviderPage({
   const selectApiPreset = async (presetId: ApiProviderPresetId) => {
     const selectionId = ++apiPresetSelectionRef.current;
     const preset = API_PROVIDER_PRESETS.find((item) => item.id === presetId) ?? API_PROVIDER_PRESETS[0];
-    const apiKey = await window.sessionSearch.getApiProviderKey("codex", preset.id).catch(() => "");
+    const activeProvider = preset.id === "custom"
+      ? codexConfig?.providers.find((provider) => provider.id === codexConfig.activeProviderId)
+      : undefined;
+    const nextProviderId = activeProvider?.id ?? preset.id;
+    const apiKey = preset.id === "custom"
+      ? ""
+      : await window.sessionSearch.getApiProviderKey("codex", preset.id).catch(() => "");
     if (selectionId !== apiPresetSelectionRef.current) return;
     if (preset.id === "custom") {
-      const activeProvider = codexConfig?.providers.find((provider) => provider.id === codexConfig.activeProviderId);
       setSelectedCodexConfigProviderId(activeProvider?.id ?? "");
-      setDraftApiConfig((current) => ({
-        ...current,
-        activeProvider: "custom",
-        customProviderId: "custom",
-        customProviderName: activeProvider?.name || current.customProviderName || preset.providerName,
-        customBaseUrl: activeProvider?.baseUrl || current.customBaseUrl,
-        customApiKey: apiKey || current.customApiKey,
-        customModel: codexConfig?.activeModel || current.customModel,
-        customApiFormat: activeProvider?.wireApi === "chat" ? "openai_chat" : current.customApiFormat || preset.apiFormat,
-      }));
+      setDraftApiConfig((current) => {
+        const nextBaseUrl = activeProvider?.baseUrl || current.customBaseUrl;
+        const reusableKey = providerTargetMatches(current, nextProviderId, nextBaseUrl)
+          ? current.customApiKey
+          : providerTargetMatches(settings?.apiConfig, nextProviderId, nextBaseUrl)
+            ? settings?.apiConfig.customApiKey ?? ""
+            : "";
+        return {
+          ...current,
+          activeProvider: "custom",
+          customProviderId: nextProviderId,
+          customProviderName: activeProvider?.name || current.customProviderName || preset.providerName,
+          customBaseUrl: nextBaseUrl,
+          customApiKey: reusableKey,
+          customModel: codexConfig?.activeModel || current.customModel,
+          customApiFormat: activeProvider?.wireApi === "chat" ? "openai_chat" : current.customApiFormat || preset.apiFormat,
+        };
+      });
     } else {
       setSelectedCodexConfigProviderId("");
       setDraftApiConfig((current) => ({
@@ -279,30 +321,43 @@ export function ProviderPage({
     // has typed, instead of snapping the select back to the previous provider.
     if (!providerId) {
       setSelectedCodexConfigProviderId("");
-      updateDraftApiConfig({ activeProvider: "custom", customProviderId: "custom" });
+      setDraftApiConfig((current) => ({
+        ...current,
+        activeProvider: "custom",
+        customProviderId: "custom",
+        customApiKey: providerTargetMatches(current, "custom", current.customBaseUrl) ? current.customApiKey : "",
+      }));
       return;
     }
     const provider = codexConfig?.providers.find((item) => item.id === providerId);
     if (!provider) return;
     setSelectedCodexConfigProviderId(provider.id);
-    updateDraftApiConfig({
+    setDraftApiConfig((current) => ({
+      ...current,
       activeProvider: "custom",
       // Keep the config's own id so the credential lookup and the applied config.toml
       // section both point at the provider the user just picked.
       customProviderId: provider.id,
       customProviderName: provider.name || provider.id,
       customBaseUrl: provider.baseUrl,
+      customApiKey: providerTargetMatches(current, provider.id, provider.baseUrl) ? current.customApiKey : "",
       customApiFormat: provider.wireApi === "chat" ? "openai_chat" : "openai_responses",
-    });
+    }));
   };
 
   const detectCodexModels = async () => {
     setCodexModelProbeStatus({ kind: "running", message: l("Detecting models...", "正在探测模型...") });
     try {
+      const configuredProviderId = selectedCodexConfigProviderId || codexConfig?.activeProviderId;
+      const configuredProvider = codexConfig?.providers.find((provider) => provider.id === configuredProviderId);
+      const providerId = configuredProvider
+        && normalizeProviderBaseUrl(configuredProvider.baseUrl) === normalizeProviderBaseUrl(draftApiConfig.customBaseUrl)
+        ? configuredProvider.id
+        : draftApiConfig.customProviderId;
       const result = await window.sessionSearch.probeCodexModels({
         baseUrl: draftApiConfig.customBaseUrl,
         apiKey: draftApiConfig.customApiKey,
-        providerId: selectedCodexConfigProviderId || codexConfig?.activeProviderId,
+        providerId,
         codexHome: draftApiConfig.customConfigDir || undefined,
         keyTarget: "codex",
       });
@@ -336,6 +391,64 @@ export function ProviderPage({
       });
     } catch (error) {
       setClaudeModelProbeStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  const testCodexConnection = async () => {
+    const testId = ++codexConnectionTestIdRef.current;
+    const testedSignature = codexConnectionSignature;
+    setCodexConnectionStatus({ kind: "running", message: l("Testing Codex connection...", "正在测试 Codex 连接...") });
+    try {
+      const result = await window.sessionSearch.testProviderConnection({
+        target: "codex",
+        apiConfig: { ...draftApiConfig },
+      });
+      if (
+        testId !== codexConnectionTestIdRef.current
+        || testedSignature !== codexConnectionSignatureRef.current
+      ) return;
+      setCodexConnectionStatus({
+        kind: "success",
+        message: l(
+          `Codex connection succeeded in ${result.elapsedMs} ms using ${result.credentialSource}.`,
+          `Codex 连接成功，使用 ${result.credentialSource}，耗时 ${result.elapsedMs} 毫秒。`,
+        ),
+      });
+    } catch (error) {
+      if (
+        testId !== codexConnectionTestIdRef.current
+        || testedSignature !== codexConnectionSignatureRef.current
+      ) return;
+      setCodexConnectionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  const testClaudeConnection = async () => {
+    const testId = ++claudeConnectionTestIdRef.current;
+    const testedSignature = claudeConnectionSignature;
+    setClaudeConnectionStatus({ kind: "running", message: l("Testing Claude Code connection...", "正在测试 Claude Code 连接...") });
+    try {
+      const result = await window.sessionSearch.testProviderConnection({
+        target: "claude",
+        apiConfig: { ...draftClaudeApiConfig },
+      });
+      if (
+        testId !== claudeConnectionTestIdRef.current
+        || testedSignature !== claudeConnectionSignatureRef.current
+      ) return;
+      setClaudeConnectionStatus({
+        kind: "success",
+        message: l(
+          `Claude Code connection succeeded in ${result.elapsedMs} ms using ${result.credentialSource}.`,
+          `Claude Code 连接成功，使用 ${result.credentialSource}，耗时 ${result.elapsedMs} 毫秒。`,
+        ),
+      });
+    } catch (error) {
+      if (
+        testId !== claudeConnectionTestIdRef.current
+        || testedSignature !== claudeConnectionSignatureRef.current
+      ) return;
+      setClaudeConnectionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     }
   };
 
@@ -696,18 +809,25 @@ export function ProviderPage({
   const selectClaudeApiPreset = async (presetId: ClaudeApiProviderPresetId) => {
     const selectionId = ++claudeApiPresetSelectionRef.current;
     const preset = CLAUDE_API_PROVIDER_PRESETS.find((item) => item.id === presetId) ?? CLAUDE_API_PROVIDER_PRESETS[0];
-    const apiKey = await window.sessionSearch.getApiProviderKey("claude", preset.id).catch(() => "");
+    const apiKey = preset.id === "custom"
+      ? ""
+      : await window.sessionSearch.getApiProviderKey("claude", preset.id).catch(() => "");
     if (selectionId !== claudeApiPresetSelectionRef.current) return;
     setDraftClaudeApiConfig((current) => {
       if (preset.id === "custom") {
+        const nextProviderId = "custom";
+        const nextBaseUrl = current.customBaseUrl;
+        const reusableKey = providerTargetMatches(current, nextProviderId, nextBaseUrl)
+          ? current.customApiKey
+          : providerTargetMatches(settings?.claudeApiConfig, nextProviderId, nextBaseUrl)
+            ? settings?.claudeApiConfig.customApiKey ?? ""
+            : "";
         return {
           ...current,
           activeProvider: "custom",
-          customProviderId: "custom",
+          customProviderId: nextProviderId,
           customProviderName: current.customProviderName || preset.providerName,
-          // Custom has no route of its own to restore, so a missing stored key must not
-          // erase whatever the user has already typed into the field.
-          customApiKey: apiKey || current.customApiKey,
+          customApiKey: reusableKey,
         };
       }
       return {
@@ -794,6 +914,16 @@ export function ProviderPage({
     setDraftSummaryReasoningEffort(settings?.summaryReasoningEffort ?? "medium");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsSignature]);
+
+  useEffect(() => {
+    codexConnectionTestIdRef.current += 1;
+    setCodexConnectionStatus(null);
+  }, [codexConnectionSignature]);
+
+  useEffect(() => {
+    claudeConnectionTestIdRef.current += 1;
+    setClaudeConnectionStatus(null);
+  }, [claudeConnectionSignature]);
 
   useEffect(() => {
     // Re-read whenever the directory changes, otherwise the pane keeps showing the config
@@ -1008,7 +1138,14 @@ export function ProviderPage({
                       value={draftApiConfig.customBaseUrl}
                       disabled={!settings || saving}
                       placeholder="https://api.example.com/v1"
-                      onChange={(event) => updateDraftApiConfig({ customBaseUrl: event.currentTarget.value })}
+                      onChange={(event) => {
+                        setSelectedCodexConfigProviderId("");
+                        updateDraftApiConfig({
+                          customProviderId: "custom",
+                          customBaseUrl: event.currentTarget.value,
+                          customApiKey: "",
+                        });
+                      }}
                     />
                   </label>
                   <label className="settings-field">
@@ -1261,7 +1398,14 @@ export function ProviderPage({
                       value={draftClaudeApiConfig.customBaseUrl}
                       disabled={!settings || saving}
                       placeholder="https://api.example.com/anthropic"
-                      onChange={(event) => updateDraftClaudeApiConfig({ customBaseUrl: event.currentTarget.value })}
+                      onChange={(event) => {
+                        setSelectedClaudeConfigRoute("");
+                        updateDraftClaudeApiConfig({
+                          customProviderId: "custom",
+                          customBaseUrl: event.currentTarget.value,
+                          customApiKey: "",
+                        });
+                      }}
                     />
                   </label>
                   <label className="settings-field">
@@ -1511,7 +1655,11 @@ export function ProviderPage({
                   value={summaryView.baseUrl}
                   disabled={!settings || saving || !summaryView.baseUrlEditable}
                   placeholder={summaryView.baseUrlPlaceholder}
-                  onChange={(event) => updateDraftSummaryApiConfig({ customBaseUrl: event.currentTarget.value })}
+                  onChange={(event) => updateDraftSummaryApiConfig({
+                    customProviderId: "custom",
+                    customBaseUrl: event.currentTarget.value,
+                    customApiKey: "",
+                  })}
                 />
               </label>
               <div className="settings-field" data-summary-row="model">
@@ -1681,9 +1829,38 @@ export function ProviderPage({
           )}
         </div>
         <div className="dialog-actions api-config-actions">
-          <span className={`api-config-status ${feedback?.kind ?? ""}`} aria-live="polite">
-            {feedback?.message ?? ""}
-          </span>
+          <div className="api-config-feedback" aria-live="polite">
+            {feedback ? <span className={`api-config-status ${feedback.kind}`}>{feedback.message}</span> : null}
+            {apiTarget === "codex" && codexConnectionStatus ? (
+              <span className={`api-config-status ${codexConnectionStatus.kind}`}>{codexConnectionStatus.message}</span>
+            ) : null}
+            {apiTarget === "claude" && claudeConnectionStatus ? (
+              <span className={`api-config-status ${claudeConnectionStatus.kind}`}>{claudeConnectionStatus.message}</span>
+            ) : null}
+          </div>
+          {apiTarget === "codex" ? (
+            <button
+              type="button"
+              data-provider-connection-test="codex"
+              disabled={!settings || saving || codexConnectionStatus?.kind === "running"}
+              onClick={() => void testCodexConnection()}
+            >
+              {codexConnectionStatus?.kind === "running"
+                ? l("Testing connection...", "正在测试连接...")
+                : l("Test connection", "测试连接")}
+            </button>
+          ) : apiTarget === "claude" ? (
+            <button
+              type="button"
+              data-provider-connection-test="claude"
+              disabled={!settings || saving || claudeConnectionStatus?.kind === "running"}
+              onClick={() => void testClaudeConnection()}
+            >
+              {claudeConnectionStatus?.kind === "running"
+                ? l("Testing connection...", "正在测试连接...")
+                : l("Test connection", "测试连接")}
+            </button>
+          ) : null}
           <button type="button" className={apiTarget === "summary" ? "primary-action" : ""} disabled={!settings || saving} onClick={saveDraft}>
             {apiTarget === "summary"
               ? l("Save summary settings", "保存摘要设置")

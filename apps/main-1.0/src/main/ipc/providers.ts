@@ -11,6 +11,8 @@ import {
   type ClaudeModelProbeRequest,
   type CodexModelProbeRequest,
   type ConfigSnapshotRequest,
+  type ProviderConnectionRequest,
+  type ProviderConnectionResult,
   type ProviderKeyTarget,
   type SummaryProviderConnectionRequest,
   type SummaryProviderConnectionResult,
@@ -22,6 +24,7 @@ export interface ProvidersIpcService {
   getClaudeConfig(input: ConfigSnapshotRequest): Promise<ClaudeConfigSnapshot>;
   probeCodexModels(input: CodexModelProbeRequest): Promise<CodexModelProbeResult>;
   probeClaudeModels(input: ClaudeModelProbeRequest): Promise<ClaudeModelProbeResult>;
+  testProviderConnection(input: ProviderConnectionRequest): Promise<ProviderConnectionResult>;
   testSummaryProviderConnection(input: SummaryProviderConnectionRequest): Promise<SummaryProviderConnectionResult>;
   applyCodexProfile(apiConfig: Partial<ApiConfig>): Promise<ApplyCodexProfileResult>;
   applyClaudeProfile(apiConfig: Partial<ClaudeApiConfig>): Promise<ApplyClaudeProfileResult>;
@@ -45,6 +48,8 @@ export function registerProvidersIpc(
     registerIpcHandler(ipc, PROVIDERS_IPC.getClaudeConfig, (_event, input) => service.getClaudeConfig(input)),
     registerIpcHandler(ipc, PROVIDERS_IPC.probeCodexModels, (_event, input) => service.probeCodexModels(input)),
     registerIpcHandler(ipc, PROVIDERS_IPC.probeClaudeModels, (_event, input) => service.probeClaudeModels(input)),
+    registerIpcHandler(ipc, PROVIDERS_IPC.testProviderConnection, (_event, input) =>
+      service.testProviderConnection(input)),
     registerIpcHandler(ipc, PROVIDERS_IPC.pickConfigDirectory, (_event, target, defaultPath) => {
       if (!pickConfigDirectory) throw new Error("Config directory picker is unavailable.");
       return pickConfigDirectory(target, defaultPath);

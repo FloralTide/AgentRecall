@@ -12,6 +12,8 @@ import {
   type ClaudeModelProbeRequest,
   type CodexModelProbeRequest,
   type ConfigSnapshotRequest,
+  type ProviderConnectionRequest,
+  type ProviderConnectionResult,
   type ProviderKeyTarget,
   type SummaryProviderConnectionRequest,
   type SummaryProviderConnectionResult,
@@ -29,6 +31,10 @@ export function createProvidersApi(ipc: ProvidersIpcRenderer) {
       ipc.invoke(PROVIDERS_IPC.probeCodexModels.channel, input),
     probeClaudeModels: (input: ClaudeModelProbeRequest): Promise<ClaudeModelProbeResult> =>
       ipc.invoke(PROVIDERS_IPC.probeClaudeModels.channel, input),
+    testProviderConnection: (
+      input: ProviderConnectionRequest,
+    ): Promise<ProviderConnectionResult> =>
+      ipc.invoke(PROVIDERS_IPC.testProviderConnection.channel, input),
     pickConfigDirectory: (target: ProviderKeyTarget, defaultPath?: string): Promise<string | null> =>
       ipc.invoke(PROVIDERS_IPC.pickConfigDirectory.channel, target, defaultPath),
     testSummaryProviderConnection: (

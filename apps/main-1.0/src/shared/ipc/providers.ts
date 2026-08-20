@@ -57,6 +57,17 @@ export const claudeModelProbeInput = z.object({
 
 export const providerKeyTarget = z.enum(["codex", "claude", "summary"]);
 
+export const providerConnectionInput = z.discriminatedUnion("target", [
+  z.object({
+    target: z.literal("codex"),
+    apiConfig: apiConfigInput,
+  }).strict(),
+  z.object({
+    target: z.literal("claude"),
+    apiConfig: claudeApiConfigInput,
+  }).strict(),
+]);
+
 const summaryConnectionFields = {
   baseUrl: boundedString(8_192).trim().min(1),
   apiKey: boundedString(65_536),
@@ -105,18 +116,25 @@ export type ProviderKeyTarget = z.infer<typeof providerKeyTarget>;
 export type ConfigSnapshotRequest = z.infer<typeof configSnapshotInput>;
 export type CodexModelProbeRequest = z.infer<typeof codexModelProbeInput>;
 export type ClaudeModelProbeRequest = z.infer<typeof claudeModelProbeInput>;
+export type ProviderConnectionRequest = z.infer<typeof providerConnectionInput>;
 export type SummaryProviderConnectionRequest = z.infer<typeof summaryProviderConnectionInput>;
 
-export interface SummaryProviderConnectionResult {
+export interface ProviderConnectionResult {
   elapsedMs: number;
   credentialSource: string;
 }
+
+export type SummaryProviderConnectionResult = ProviderConnectionResult;
 
 export const PROVIDERS_IPC = {
   getCodexConfig: defineIpcRequest("codex-config:get", z.tuple([configSnapshotInput])),
   getClaudeConfig: defineIpcRequest("claude-config:get", z.tuple([configSnapshotInput])),
   probeCodexModels: defineIpcRequest("codex-config:probe-models", z.tuple([codexModelProbeInput])),
   probeClaudeModels: defineIpcRequest("claude-config:probe-models", z.tuple([claudeModelProbeInput])),
+  testProviderConnection: defineIpcRequest(
+    "provider:test-connection",
+    z.tuple([providerConnectionInput]),
+  ),
   pickConfigDirectory: defineIpcRequest(
     "provider-config:pick-directory",
     z.tuple([providerKeyTarget, z.union([boundedString(8_192), z.undefined()])]),

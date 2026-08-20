@@ -363,6 +363,7 @@ describe("summarizeSession", () => {
         apiFormat: "codex_exec",
         command: fake.executable,
         cwd: path.dirname(fake.executable),
+        cliArgs: ["-c", 'model_provider="connection-test"'],
         onTemporarySession: (sessionKey) => temporarySessions.push(sessionKey),
       },
       requestSummaryCompletion,
@@ -374,7 +375,14 @@ describe("summarizeSession", () => {
       .map((line) => JSON.parse(line) as { args: string[]; input: string });
     expect(result.summary).toBe("Summarized with current Codex config.");
     expect(temporarySessions).toEqual(["codex:thread-summary-1"]);
-    expect(calls[0].args).toEqual(expect.arrayContaining(["exec", "--ephemeral", "--json", "--skip-git-repo-check"]));
+    expect(calls[0].args).toEqual(expect.arrayContaining([
+      "exec",
+      "--ephemeral",
+      "--json",
+      "--skip-git-repo-check",
+      "-c",
+      'model_provider="connection-test"',
+    ]));
     expect(calls[0].args).not.toContain(expect.stringContaining("summarize using official codex"));
     expect(calls[0].input).toContain("summarize using official codex");
     expect(calls[0].input.length).toBeGreaterThan(20_000);
@@ -412,6 +420,7 @@ describe("summarizeSession", () => {
         apiFormat: "claude_exec",
         command: fake.executable,
         cwd: path.dirname(fake.executable),
+        cliArgs: ["--settings", '{"env":{"ANTHROPIC_BASE_URL":""}}'],
         onTemporarySession: (sessionKey) => temporarySessions.push(sessionKey),
       },
       requestSummaryCompletion,
@@ -423,7 +432,13 @@ describe("summarizeSession", () => {
       .map((line) => JSON.parse(line) as { args: string[]; input: string });
     expect(result.summary).toBe("Summarized with current Claude Code settings.");
     expect(temporarySessions).toEqual(["claude:claude-summary-1"]);
-    expect(calls[0].args).toEqual(expect.arrayContaining(["--print", "--output-format", "stream-json"]));
+    expect(calls[0].args).toEqual(expect.arrayContaining([
+      "--print",
+      "--output-format",
+      "stream-json",
+      "--settings",
+      '{"env":{"ANTHROPIC_BASE_URL":""}}',
+    ]));
     expect(calls[0].args).not.toContain(expect.stringContaining("summarize using official claude"));
     expect(calls[0].input).toContain("summarize using official claude");
     expect(calls[0].input.length).toBeGreaterThan(20_000);

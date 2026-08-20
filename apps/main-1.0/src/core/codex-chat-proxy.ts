@@ -6,6 +6,7 @@ export interface CodexChatProxyOptions {
   model: string;
   listenHost?: string;
   listenPort?: number;
+  fetchImpl?: typeof fetch;
 }
 
 export interface CodexChatProxyStatus {
@@ -20,6 +21,7 @@ export interface CodexChatProxyStatus {
 export class CodexChatProxy {
   private server: http.Server | null = null;
   private status: CodexChatProxyStatus | null = null;
+  private readonly activeUpstreamRequests = new Set<AbortController>();
 
   constructor(private readonly options: CodexChatProxyOptions) {}
 
@@ -51,10 +53,16 @@ export class CodexChatProxy {
     const server = this.server;
     this.server = null;
     this.status = null;
+    for (const controller of this.activeUpstreamRequests) controller.abort();
     if (!server) return;
-    await new Promise<void>((resolve, reject) => {
+    const closed = new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
+    // `server.close()` waits for active clients, including one that never finishes uploading its
+    // request body. Force those sockets closed after initiating graceful shutdown so stop remains
+    // bounded; upstream requests have already received their abort signal above.
+    server.closeAllConnections();
+    await closed;
   }
 
   getStatus(): CodexChatProxyStatus {
@@ -89,38 +97,76 @@ export class CodexChatProxy {
       }
 
       const body = JSON.parse(await readRequestBody(req)) as Record<string, unknown>;
-      const upstreamResponse = await fetch(`${normalizeBaseUrl(this.options.upstreamBaseUrl)}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${this.options.apiKey}`,
-        },
-        body: JSON.stringify(buildChatCompletionRequest(body, this.effectiveModel(body))),
-      });
+      const controller = new AbortController();
+      const abortUpstream = () => controller.abort();
+      const abortUpstreamIfResponseIncomplete = () => {
+        if (!res.writableEnded) abortUpstream();
+      };
+      req.once("aborted", abortUpstream);
+      res.once("close", abortUpstreamIfResponseIncomplete);
+      this.activeUpstreamRequests.add(controller);
+      try {
+        const upstreamResponse = await (this.options.fetchImpl ?? fetch)(
+          `${normalizeBaseUrl(this.options.upstreamBaseUrl)}/chat/completions`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              authorization: `Bearer ${this.options.apiKey}`,
+            },
+            body: JSON.stringify(buildChatCompletionRequest(body, this.effectiveModel(body))),
+            signal: controller.signal,
+          },
+        );
 
-      if (!upstreamResponse.ok || !upstreamResponse.body) {
-        const text = await upstreamResponse.text().catch(() => "");
-        writeJson(res, upstreamResponse.status || 502, {
-          error: { message: text || `Upstream request failed with status ${upstreamResponse.status}.` },
+        if (!upstreamResponse.ok || !upstreamResponse.body) {
+          const text = await upstreamResponse.text().catch(() => "");
+          if (res.destroyed || res.writableEnded) return;
+          writeJson(res, upstreamResponse.status || 502, {
+            error: {
+              message: redactSecret(
+                text || `Upstream request failed with status ${upstreamResponse.status}.`,
+                this.options.apiKey,
+              ),
+            },
+          });
+          return;
+        }
+
+        if (!upstreamResponse.headers.get("content-type")?.includes("text/event-stream")) {
+          if (res.destroyed || res.writableEnded) return;
+          await writeNonStreamingChatResponse(res, upstreamResponse);
+          return;
+        }
+
+        if (res.destroyed || res.writableEnded) return;
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
         });
-        return;
+        await pipeChatSseAsResponses(upstreamResponse.body, res, this.effectiveModel(body) || "chat-model");
+      } finally {
+        req.off("aborted", abortUpstream);
+        res.off("close", abortUpstreamIfResponseIncomplete);
+        this.activeUpstreamRequests.delete(controller);
       }
-
-      if (!upstreamResponse.headers.get("content-type")?.includes("text/event-stream")) {
-        await writeNonStreamingChatResponse(res, upstreamResponse);
-        return;
-      }
-
-      res.writeHead(200, {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache",
-        connection: "keep-alive",
-      });
-      await pipeChatSseAsResponses(upstreamResponse.body, res, this.effectiveModel(body) || "chat-model");
     } catch (error) {
+      if (isAbortError(error)) {
+        if (!res.destroyed && !res.writableEnded) res.destroy();
+        return;
+      }
+      if (res.destroyed || res.writableEnded) return;
       if (!res.headersSent) {
-        writeJson(res, 500, { error: { message: error instanceof Error ? error.message : String(error) } });
-      } else {
+        writeJson(res, 500, {
+          error: {
+            message: redactSecret(
+              error instanceof Error ? error.message : String(error),
+              this.options.apiKey,
+            ),
+          },
+        });
+      } else if (!res.writableEnded) {
         res.end();
       }
     }
@@ -527,6 +573,14 @@ function isResponsesPath(url: string): boolean {
 
 function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.trim().replace(/\/+$/, "");
+}
+
+function redactSecret(message: string, secret: string): string {
+  return secret ? message.split(secret).join("[REDACTED]") : message;
+}
+
+function isAbortError(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "name" in error && error.name === "AbortError");
 }
 
 function readString(value: unknown): string {

@@ -10,6 +10,7 @@ import {
 import { writeVerifiedConfig } from "./atomic-config-write";
 import { probeProviderModels, type ProviderModelProbeResult, type ProviderModelsFetch } from "./provider-models";
 import { prepareProviderConfigDirectory, resolveProviderConfigDirectory } from "./provider-config-path";
+import { runProviderCredentialCommand } from "./provider-credential-helper";
 
 export interface ApplyClaudeProfileResult {
   profile: string;
@@ -33,6 +34,7 @@ export interface ClaudeConfigSnapshot {
 export interface ClaudeModelProbeInput {
   baseUrl: string;
   apiKey: string;
+  providerId?: string;
   apiFormat: ClaudeApiConfig["customApiFormat"];
   apiKeyField: ClaudeApiConfig["customApiKeyField"];
   claudeHome?: string;
@@ -41,6 +43,13 @@ export interface ClaudeModelProbeInput {
 
 export interface ClaudeModelProbeResult extends ProviderModelProbeResult {
   credentialSource: string;
+}
+
+interface ResolvedClaudeCredential {
+  apiKey: string;
+  source: string | null;
+  /** A helper can be configured without resolving its secret during config snapshots. */
+  configured?: boolean;
 }
 
 const CLAUDE_ROUTE_ENV_KEYS = [
@@ -95,14 +104,18 @@ export async function loadClaudeConfigSnapshot(configuredHome?: string): Promise
   const settingsPath = path.join(claudeHome, "settings.json");
   const text = await readOptionalFile(settingsPath);
   const route = await loadClaudeApiConfigDefaults(claudeHome);
-  const credential = await resolveClaudeCredential({ claudeHome, apiKeyField: route.customApiKeyField });
+  const credential = await resolveClaudeCredential({
+    claudeHome,
+    apiKeyField: route.customApiKeyField,
+    executeCredentialHelper: false,
+  });
   return {
     claudeHome,
     settingsPath,
     exists: Boolean(text?.trim()),
     route: Object.keys(route).length > 0 ? { ...route, customApiKey: "" } : route,
     credentialSource: credential.source,
-    hasApiKey: Boolean(credential.apiKey),
+    hasApiKey: Boolean(credential.apiKey) || credential.configured === true,
   };
 }
 
@@ -112,18 +125,38 @@ export async function probeClaudeModels(
 ): Promise<ClaudeModelProbeResult> {
   const claudeHome = resolveProviderConfigDirectory(input.claudeHome, ".claude");
   const explicitKey = input.apiKey.trim();
-  const credential = await resolveClaudeCredential({
-    claudeHome,
-    apiKeyField: input.apiKeyField,
-    explicitKey,
-    explicitSource: input.apiKeySource,
-  });
+  const requestedBaseUrl = normalizeBaseUrl(input.baseUrl);
+  const route = await loadClaudeApiConfigDefaults(claudeHome);
+  const routeMatches = route.activeProvider === "custom"
+    && (!requestedBaseUrl || normalizeBaseUrl(route.customBaseUrl || "") === requestedBaseUrl);
+  const baseUrl = requestedBaseUrl || (routeMatches ? normalizeBaseUrl(route.customBaseUrl || "") : "");
+  let credential: ResolvedClaudeCredential;
+  if (explicitKey) {
+    credential = await resolveClaudeCredential({
+      claudeHome,
+      apiKeyField: input.apiKeyField,
+      explicitKey,
+      explicitSource: input.apiKeySource,
+    });
+  } else {
+    credential = routeMatches
+      ? await resolveClaudeCredential({
+          claudeHome,
+          apiKeyField: input.apiKeyField,
+          executeCredentialHelper: true,
+        })
+      : { apiKey: "", source: null };
+  }
   const result = await probeProviderModels({
-    baseUrl: input.baseUrl,
+    baseUrl,
     apiKey: credential.apiKey,
     apiFormat: input.apiFormat,
   }, fetchImpl);
   return { ...result, credentialSource: credential.source || "resolved credential" };
+}
+
+function normalizeBaseUrl(baseUrl: string): string {
+  return baseUrl.trim().replace(/\/+$/, "");
 }
 
 export async function applyClaudeApiConfig(options: {
@@ -144,12 +177,24 @@ export async function applyClaudeApiConfig(options: {
 
   let credentialSource: string | null = null;
   if (apiConfig.activeProvider === "custom") {
-    const credential = await resolveClaudeCredential({
-      claudeHome,
-      apiKeyField: apiConfig.customApiKeyField,
-      explicitKey: apiConfig.customApiKey,
-    });
-    if (!credential.apiKey) throw new Error(`No API key was found for ${apiConfig.customProviderName}.`);
+    const explicitKey = apiConfig.customApiKey.trim();
+    const currentRoute = await loadClaudeApiConfigDefaults(claudeHome);
+    const currentRouteMatches = currentRoute.activeProvider === "custom"
+      && normalizeBaseUrl(currentRoute.customBaseUrl || "") === normalizeBaseUrl(apiConfig.customBaseUrl);
+    const credential: ResolvedClaudeCredential = explicitKey || currentRouteMatches
+      ? await resolveClaudeCredential({
+          claudeHome,
+          apiKeyField: apiConfig.customApiKeyField,
+          explicitKey,
+          // Applying a route must never turn a short-lived helper value into a persisted API key.
+          executeCredentialHelper: false,
+        })
+      : { apiKey: "", source: null };
+    const useApiKeyHelper = currentRouteMatches
+      && !explicitKey
+      && !credential.apiKey
+      && credential.configured === true;
+    if (!credential.apiKey && !useApiKeyHelper) throw new Error(`No API key was found for ${apiConfig.customProviderName}.`);
     credentialSource = credential.source;
     applyCustomClaudeEnv(settings, { ...apiConfig, customApiKey: credential.apiKey });
   } else {
@@ -201,13 +246,13 @@ function claudeApiConfigWithPresetDefaults(config: Partial<ClaudeApiConfig>): Cl
 }
 
 function applyCustomClaudeEnv(settings: Record<string, unknown>, apiConfig: ClaudeApiConfig): void {
-  if (!apiConfig.customApiKey) throw new Error(`API key is required to apply ${apiConfig.customProviderName}.`);
   if (!apiConfig.customBaseUrl) throw new Error(`Base URL is required to apply ${apiConfig.customProviderName}.`);
 
   const env = ensureEnv(settings);
   clearClaudeRouteEnv(settings);
   env.ANTHROPIC_BASE_URL = apiConfig.customBaseUrl;
-  env[apiConfig.customApiKeyField] = apiConfig.customApiKey;
+  // A matching apiKeyHelper stays authoritative without copying its short-lived value into env.
+  if (apiConfig.customApiKey) env[apiConfig.customApiKeyField] = apiConfig.customApiKey;
   // An empty model means "keep whatever the config file already selects", the same thing the
   // Default entry means in every model picker. Pinning the route without pinning the model is a
   // legitimate setup, so the model variables are simply left unset rather than rejected.
@@ -226,20 +271,34 @@ function applyCustomClaudeEnv(settings: Record<string, unknown>, apiConfig: Clau
 
 /**
  * Resolves the credential the Claude CLI would use for a config directory, following the same
- * order it does: an explicitly typed key, then `settings.json`'s `env`, then the process
- * environment. Mirrors `resolveCodexProviderCredential` so callers that must work against either
- * agent — the AI summary panel, for one — can treat the two the same way.
+ * order it does: an explicitly typed key, process and settings environment values, then
+ * `apiKeyHelper`. Mirrors `resolveCodexProviderCredential` so callers that must work against
+ * either agent — the AI summary panel, for one — can treat the two the same way.
  */
 export async function resolveClaudeProviderCredential(input: {
   claudeHome?: string;
+  providerId?: string;
+  /** When supplied, config-owned credentials must belong to this effective Claude Base URL. */
+  baseUrl?: string;
   apiKeyField?: ClaudeApiConfig["customApiKeyField"];
   apiKey?: string;
   apiKeySource?: string;
 }): Promise<{ apiKey: string; source: string | null }> {
+  const claudeHome = resolveProviderConfigDirectory(input.claudeHome, ".claude");
+  const explicitKey = input.apiKey?.trim() ?? "";
+  if (!explicitKey && input.baseUrl !== undefined) {
+    const route = await loadClaudeApiConfigDefaults(claudeHome);
+    if (
+      route.activeProvider !== "custom"
+      || normalizeBaseUrl(route.customBaseUrl || "") !== normalizeBaseUrl(input.baseUrl)
+    ) {
+      return { apiKey: "", source: null };
+    }
+  }
   return resolveClaudeCredential({
-    claudeHome: resolveProviderConfigDirectory(input.claudeHome, ".claude"),
+    claudeHome,
     apiKeyField: input.apiKeyField,
-    explicitKey: input.apiKey,
+    explicitKey,
     explicitSource: input.apiKeySource,
   });
 }
@@ -249,7 +308,9 @@ async function resolveClaudeCredential(options: {
   apiKeyField?: ClaudeApiConfig["customApiKeyField"];
   explicitKey?: string;
   explicitSource?: string;
-}): Promise<{ apiKey: string; source: string | null }> {
+  /** Config snapshots detect apiKeyHelper without executing a user-owned shell command. */
+  executeCredentialHelper?: boolean;
+}): Promise<ResolvedClaudeCredential> {
   const explicitKey = options.explicitKey?.trim() ?? "";
   if (explicitKey) return { apiKey: explicitKey, source: options.explicitSource || "API key field" };
   const settings = parseJsonObject(await readOptionalFile(path.join(options.claudeHome, "settings.json")));
@@ -262,6 +323,25 @@ async function resolveClaudeCredential(options: {
   for (const key of keys) {
     const value = readString(env[key]);
     if (value) return { apiKey: value, source: `settings.json env.${key}` };
+  }
+  const apiKeyHelper = readString(settings?.apiKeyHelper);
+  if (apiKeyHelper) {
+    const source = "settings.json apiKeyHelper";
+    if (options.executeCredentialHelper === false) return { apiKey: "", source, configured: true };
+    const helperEnv = { ...process.env };
+    for (const [key, value] of Object.entries(env)) {
+      if (typeof value === "string") helperEnv[key] = value;
+    }
+    const shell = process.platform === "win32"
+      ? process.env.ComSpec?.trim() || "cmd.exe"
+      : "/bin/sh";
+    const args = process.platform === "win32"
+      ? ["/d", "/s", "/c", apiKeyHelper]
+      : ["-c", apiKeyHelper];
+    return {
+      apiKey: await runProviderCredentialCommand({ command: shell, args, env: helperEnv }),
+      source,
+    };
   }
   return { apiKey: "", source: null };
 }

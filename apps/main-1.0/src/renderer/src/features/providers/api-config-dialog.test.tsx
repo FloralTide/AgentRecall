@@ -49,12 +49,14 @@ function claudeSnapshot() {
 describe("AI summary source pane", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let testProviderConnection: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
+    testProviderConnection = vi.fn(async () => ({ elapsedMs: 1, credentialSource: "runtime" }));
     Object.defineProperty(window, "sessionSearch", {
       configurable: true,
       value: {
@@ -64,6 +66,7 @@ describe("AI summary source pane", () => {
         pickConfigDirectory: vi.fn(async () => ""),
         probeCodexModels: vi.fn(async () => ({ models: [], endpoint: "", endpoints: [], credentialSource: "" })),
         probeClaudeModels: vi.fn(async () => ({ models: [], endpoint: "", endpoints: [], credentialSource: "" })),
+        testProviderConnection,
         testSummaryProviderConnection: vi.fn(async () => ({ elapsedMs: 1, credentialSource: "" })),
       },
     });
@@ -75,9 +78,9 @@ describe("AI summary source pane", () => {
     vi.restoreAllMocks();
   });
 
-  async function mountSummaryPane(): Promise<void> {
+  async function mountDialog(settings = structuredClone(defaultSettings)): Promise<void> {
     await act(async () => root.render(createElement(ApiConfigDialog, {
-      settings: structuredClone(defaultSettings),
+      settings,
       language: "en" as const,
       feedback: null,
       onSettingsChange: vi.fn(),
@@ -85,6 +88,17 @@ describe("AI summary source pane", () => {
       onApplyToClaude: vi.fn(),
       onClose: vi.fn(),
     })));
+  }
+
+  async function selectTarget(label: string): Promise<void> {
+    const target = [...container.querySelectorAll<HTMLButtonElement>(".api-target-tabs button")]
+      .find((button) => button.textContent?.includes(label));
+    if (!target) throw new Error(`${label} tab not rendered`);
+    await act(async () => target.click());
+  }
+
+  async function mountSummaryPane(): Promise<void> {
+    await mountDialog();
     const summaryTab = [...container.querySelectorAll<HTMLButtonElement>(".api-target-tabs button")]
       .find((button) => button.textContent?.includes("AI Summary"));
     if (!summaryTab) throw new Error("AI summary tab not rendered");
@@ -115,6 +129,189 @@ describe("AI summary source pane", () => {
     return [...container.querySelectorAll("[data-summary-row]")]
       .map((element) => element.getAttribute("data-summary-row") ?? "");
   }
+
+  it("tests the official Codex and Claude runtimes with independent status", async () => {
+    await mountDialog();
+
+    const codexTest = container.querySelector<HTMLButtonElement>('[data-provider-connection-test="codex"]');
+    expect(codexTest).toBeTruthy();
+    testProviderConnection.mockResolvedValueOnce({ elapsedMs: 17, credentialSource: "Codex CLI" });
+    await act(async () => codexTest!.click());
+    expect(testProviderConnection).toHaveBeenLastCalledWith({
+      target: "codex",
+      apiConfig: defaultSettings.apiConfig,
+    });
+    expect(container.textContent).toContain("Codex connection succeeded in 17 ms using Codex CLI.");
+
+    await selectTarget("Claude Code");
+    const claudeTest = container.querySelector<HTMLButtonElement>('[data-provider-connection-test="claude"]');
+    expect(claudeTest).toBeTruthy();
+    testProviderConnection.mockRejectedValueOnce(new Error("Claude CLI is not installed."));
+    await act(async () => claudeTest!.click());
+    expect(testProviderConnection).toHaveBeenLastCalledWith({
+      target: "claude",
+      apiConfig: defaultSettings.claudeApiConfig,
+    });
+    expect(container.textContent).toContain("Claude CLI is not installed.");
+
+    await selectTarget("Codex");
+    expect(container.textContent).toContain("Codex connection succeeded in 17 ms using Codex CLI.");
+  });
+
+  it("keeps connection testing available for custom Codex and Claude drafts", async () => {
+    await mountDialog();
+
+    const codexPreset = [...container.querySelectorAll<HTMLButtonElement>(".codex-provider-switch button")]
+      .find((button) => button.querySelector("strong")?.textContent === "DeepSeek");
+    if (!codexPreset) throw new Error("Codex DeepSeek preset not rendered");
+    await act(async () => {
+      codexPreset.click();
+      await Promise.resolve();
+    });
+    const codexTest = container.querySelector<HTMLButtonElement>('[data-provider-connection-test="codex"]');
+    await act(async () => codexTest!.click());
+    expect(testProviderConnection).toHaveBeenLastCalledWith({
+      target: "codex",
+      apiConfig: expect.objectContaining({
+        activeProvider: "custom",
+        customProviderId: "deepseek",
+        customBaseUrl: "https://api.deepseek.com",
+      }),
+    });
+
+    await selectTarget("Claude Code");
+    const claudePreset = [...container.querySelectorAll<HTMLButtonElement>(".api-provider-switch--compact button")]
+      .find((button) => button.querySelector("strong")?.textContent === "DeepSeek");
+    if (!claudePreset) throw new Error("Claude DeepSeek preset not rendered");
+    await act(async () => {
+      claudePreset.click();
+      await Promise.resolve();
+    });
+    const claudeTest = container.querySelector<HTMLButtonElement>('[data-provider-connection-test="claude"]');
+    await act(async () => claudeTest!.click());
+    expect(testProviderConnection).toHaveBeenLastCalledWith({
+      target: "claude",
+      apiConfig: expect.objectContaining({
+        activeProvider: "custom",
+        customProviderId: "deepseek",
+        customBaseUrl: "https://api.deepseek.com/anthropic",
+      }),
+    });
+  });
+
+  it("discards a connection result when the tested draft changes", async () => {
+    let resolveConnection: ((result: { elapsedMs: number; credentialSource: string }) => void) | undefined;
+    testProviderConnection.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveConnection = resolve;
+    }));
+    const settings = structuredClone(defaultSettings);
+    settings.claudeApiConfig = {
+      ...settings.claudeApiConfig,
+      activeProvider: "custom",
+      customProviderId: "custom",
+      customProviderName: "Custom Claude",
+      customBaseUrl: "https://old.example/anthropic",
+      customModel: "claude-test",
+    };
+    await mountDialog(settings);
+    await selectTarget("Claude Code");
+
+    const button = container.querySelector<HTMLButtonElement>('[data-provider-connection-test="claude"]');
+    await act(async () => button!.click());
+    expect(container.textContent).toContain("Testing Claude Code connection...");
+    expect(button?.disabled).toBe(true);
+
+    const baseUrlRow = [...container.querySelectorAll<HTMLElement>(".settings-field")]
+      .find((row) => row.querySelector(".settings-field-title")?.textContent === "Base URL");
+    const baseUrlInput = baseUrlRow?.querySelector<HTMLInputElement>("input");
+    await typeInto(baseUrlInput!, "https://new.example/anthropic");
+    await act(async () => resolveConnection?.({ elapsedMs: 12, credentialSource: "stale credential" }));
+
+    expect(container.textContent).not.toContain("stale credential");
+    expect(button?.disabled).toBe(false);
+  });
+
+  it("clears hydrated Codex and Claude keys when their manual Base URLs change", async () => {
+    const settings = structuredClone(defaultSettings);
+    settings.apiConfig = {
+      ...settings.apiConfig,
+      activeProvider: "custom",
+      customProviderId: "custom",
+      customProviderName: "Custom Codex",
+      customBaseUrl: "https://old-codex.example/v1",
+      customApiKey: "hydrated-codex-key",
+      customModel: "gpt-test",
+    };
+    settings.claudeApiConfig = {
+      ...settings.claudeApiConfig,
+      activeProvider: "custom",
+      customProviderId: "custom",
+      customProviderName: "Custom Claude",
+      customBaseUrl: "https://old-claude.example/anthropic",
+      customApiKey: "hydrated-claude-key",
+      customModel: "claude-test",
+    };
+    await mountDialog(settings);
+
+    const codexFields = [...container.querySelectorAll<HTMLElement>(".settings-field")];
+    const codexBaseUrl = codexFields
+      .find((row) => row.querySelector(".settings-field-title")?.textContent === "Base URL")
+      ?.querySelector<HTMLInputElement>("input");
+    const codexKey = codexFields
+      .find((row) => row.querySelector(".settings-field-title")?.textContent === "API Key")
+      ?.querySelector<HTMLInputElement>("input");
+    expect(codexKey?.value).toBe("hydrated-codex-key");
+
+    await typeInto(codexBaseUrl!, "https://new-codex.example/v1");
+
+    expect(codexKey?.value).toBe("");
+    const codexDetect = container.querySelector<HTMLButtonElement>(".codex-model-detect-button");
+    await act(async () => codexDetect?.click());
+    expect(window.sessionSearch.probeCodexModels).toHaveBeenLastCalledWith(expect.objectContaining({
+      baseUrl: "https://new-codex.example/v1",
+      apiKey: "",
+      providerId: "custom",
+    }));
+    const codexTest = container.querySelector<HTMLButtonElement>('[data-provider-connection-test="codex"]');
+    await act(async () => codexTest?.click());
+    expect(testProviderConnection).toHaveBeenLastCalledWith({
+      target: "codex",
+      apiConfig: expect.objectContaining({
+        customBaseUrl: "https://new-codex.example/v1",
+        customApiKey: "",
+      }),
+    });
+
+    await selectTarget("Claude Code");
+    const claudeFields = [...container.querySelectorAll<HTMLElement>(".settings-field")];
+    const claudeBaseUrl = claudeFields
+      .find((row) => row.querySelector(".settings-field-title")?.textContent === "Base URL")
+      ?.querySelector<HTMLInputElement>("input");
+    const claudeKey = claudeFields
+      .find((row) => row.querySelector(".settings-field-title")?.textContent === "API Key")
+      ?.querySelector<HTMLInputElement>("input");
+    expect(claudeKey?.value).toBe("hydrated-claude-key");
+
+    await typeInto(claudeBaseUrl!, "https://new-claude.example/anthropic");
+
+    expect(claudeKey?.value).toBe("");
+    const claudeDetect = container.querySelector<HTMLButtonElement>(".codex-model-detect-button");
+    await act(async () => claudeDetect?.click());
+    expect(window.sessionSearch.probeClaudeModels).toHaveBeenLastCalledWith(expect.objectContaining({
+      baseUrl: "https://new-claude.example/anthropic",
+      apiKey: "",
+      providerId: "custom",
+    }));
+    const claudeTest = container.querySelector<HTMLButtonElement>('[data-provider-connection-test="claude"]');
+    await act(async () => claudeTest?.click());
+    expect(testProviderConnection).toHaveBeenLastCalledWith({
+      target: "claude",
+      apiConfig: expect.objectContaining({
+        customBaseUrl: "https://new-claude.example/anthropic",
+        customApiKey: "",
+      }),
+    });
+  });
 
   it("renders the same eight rows in the same order for every source", async () => {
     await mountSummaryPane();

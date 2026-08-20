@@ -4,6 +4,7 @@ import { API_PROVIDER_PRESETS, normalizeApiConfig, type ApiConfig, type ApiProvi
 import { writeVerifiedConfig } from "./atomic-config-write";
 import { probeProviderModels, type ProviderModelsFetch } from "./provider-models";
 import { prepareProviderConfigDirectory, resolveProviderConfigDirectory } from "./provider-config-path";
+import { runProviderCredentialCommand } from "./provider-credential-helper";
 
 export type CodexProfileName = "codex" | "codexzh";
 export type CodexApplyProfileName = CodexProfileName | "generated";
@@ -49,9 +50,10 @@ export interface CodexConfigSnapshot {
   providers: CodexConfigProviderEntry[];
   /**
    * Credential the active route would actually use, resolved the same way `codex` resolves it:
-   * inline in `config.toml`, then `auth.json`, `.env`, and the environment. The per-provider
-   * entries deliberately refuse to borrow a sibling's key, so an official route — which has no
-   * `[model_providers.*]` section at all — has no other way to report that a key exists.
+   * command-backed auth or inline config, then the provider's environment key and compatible
+   * local stores. The per-provider entries deliberately refuse to borrow a sibling's key, so an
+   * official route — which has no `[model_providers.*]` section at all — has no other way to
+   * report that a key exists.
    */
   credentialSource: string | null;
   hasApiKey: boolean;
@@ -81,6 +83,11 @@ export interface CodexSummaryEndpointDefaults {
 export interface CodexCredentialResolution {
   apiKey: string;
   source: string | null;
+}
+
+interface ResolvedCodexCredential extends CodexCredentialResolution {
+  /** A helper-backed credential can be configured without resolving its secret during snapshots. */
+  configured?: boolean;
 }
 
 const OFFICIAL_CODEX_PROVIDER_ID = "openai";
@@ -133,10 +140,17 @@ export async function loadCodexConfigSnapshot(configuredHome?: string): Promise<
   const activeModel = readTopLevelTomlString(text, "model") || "";
   const providers = await Promise.all(readCodexModelProviders(text).map(async (provider) => {
     // Per-provider display must not borrow a sibling provider's key.
-    const credential = await resolveCodexCredential({ codexHome, configText: text, providerId: provider.id, allowOtherProviders: false });
+    const credential = await resolveCodexCredential({
+      codexHome,
+      configText: text,
+      providerId: provider.id,
+      allowOtherProviders: false,
+      executeCredentialHelper: false,
+      preferConfiguredHelper: true,
+    });
     return {
       ...provider,
-      hasApiKey: Boolean(credential.apiKey),
+      hasApiKey: Boolean(credential.apiKey) || credential.configured === true,
       credentialSource: credential.source,
     };
   }));
@@ -149,7 +163,13 @@ export async function loadCodexConfigSnapshot(configuredHome?: string): Promise<
   } catch {
     cachedModels = [];
   }
-  const activeCredential = await resolveCodexCredential({ codexHome, configText: text, providerId: activeProviderId });
+  const activeCredential = await resolveCodexCredential({
+    codexHome,
+    configText: text,
+    providerId: activeProviderId,
+    executeCredentialHelper: false,
+    preferConfiguredHelper: true,
+  });
   return {
     codexHome,
     configPath,
@@ -160,17 +180,21 @@ export async function loadCodexConfigSnapshot(configuredHome?: string): Promise<
     activeProvider: providers.find((provider) => provider.id === activeProviderId) ?? null,
     providers,
     credentialSource: activeCredential.source,
-    hasApiKey: Boolean(activeCredential.apiKey),
+    hasApiKey: Boolean(activeCredential.apiKey) || activeCredential.configured === true,
   };
 }
 
 export async function probeCodexModels(input: CodexModelProbeInput, fetchImpl: ProviderModelsFetch = fetch): Promise<CodexModelProbeResult> {
   const providerId = input.providerId || await readActiveCodexProviderId(input.codexHome);
-  // Always consult the Codex config: a manually typed Custom route has no section of
-  // its own, and the summary route falls back to whatever Codex is already using.
-  const configProvider = await readCodexConfigProviderSecret(providerId, input.codexHome);
-  const baseUrl = normalizeBaseUrl(input.baseUrl || configProvider?.baseUrl || "");
   const explicitKey = input.apiKey.trim();
+  const requestedBaseUrl = normalizeBaseUrl(input.baseUrl);
+  const configProvider = await readCodexConfigProviderSecret(
+    providerId,
+    requestedBaseUrl,
+    input.codexHome,
+    !explicitKey,
+  );
+  const baseUrl = requestedBaseUrl || normalizeBaseUrl(configProvider?.baseUrl || "");
   const apiKey = explicitKey || configProvider?.apiKey || "";
   const result = await probeProviderModels({ baseUrl, apiKey }, fetchImpl);
   return {
@@ -182,18 +206,38 @@ export async function probeCodexModels(input: CodexModelProbeInput, fetchImpl: P
 export async function resolveCodexProviderCredential(input: {
   codexHome?: string;
   providerId?: string;
+  /** When supplied, config-owned credentials must belong to this exact provider route. */
+  baseUrl?: string;
   apiKey?: string;
   apiKeySource?: string;
+  /** Opt in only for an operation that may execute the provider's configured auth command. */
+  executeCredentialHelper?: boolean;
+  /** Keep configured command auth authoritative instead of resolving generic fallback keys. */
+  preferConfiguredHelper?: boolean;
 }): Promise<CodexCredentialResolution> {
   const codexHome = resolveProviderConfigDirectory(input.codexHome, ".codex");
   const configText = await readOptionalFile(path.join(codexHome, "config.toml"));
   const providerId = input.providerId || readTopLevelTomlString(configText, "model_provider") || "";
+  const explicitKey = input.apiKey?.trim() ?? "";
+  if (!explicitKey && input.baseUrl !== undefined) {
+    const section = providerId ? readTomlSection(configText, modelProviderSection(providerId)) : "";
+    const configuredBaseUrl = readTomlString(section, "base_url") || "";
+    if (
+      !configuredBaseUrl
+      || normalizeBaseUrl(configuredBaseUrl) !== normalizeBaseUrl(input.baseUrl)
+    ) {
+      return { apiKey: "", source: null };
+    }
+  }
   return resolveCodexCredential({
     codexHome,
     configText,
     providerId,
     explicitKey: input.apiKey,
     explicitSource: input.apiKeySource,
+    allowOtherProviders: input.baseUrl === undefined,
+    executeCredentialHelper: input.executeCredentialHelper ?? false,
+    preferConfiguredHelper: input.preferConfiguredHelper ?? false,
   });
 }
 
@@ -203,7 +247,12 @@ export async function loadActiveCodexSummaryEndpointDefaults(codexHome?: string)
   const providerId = readTopLevelTomlString(text, "model_provider");
   const model = readTopLevelTomlString(text, "model") || "";
   if (!providerId || providerId === OFFICIAL_CODEX_PROVIDER_ID) {
-    const credential = await resolveCodexCredential({ codexHome: home, configText: text });
+    const credential = await resolveCodexCredential({
+      codexHome: home,
+      configText: text,
+      executeCredentialHelper: false,
+      preferConfiguredHelper: true,
+    });
     return credential.apiKey
       ? { baseUrl: "", model, apiKey: credential.apiKey, apiFormat: "openai_responses" }
       : null;
@@ -213,7 +262,14 @@ export async function loadActiveCodexSummaryEndpointDefaults(codexHome?: string)
   const baseUrl = readTomlString(section, "base_url") || "";
   const wireApi = readTomlString(section, "wire_api") || "";
   const envKey = readTomlString(section, "env_key") || "";
-  const credential = await resolveCodexCredential({ codexHome: home, configText: text, providerId, envKey });
+  const credential = await resolveCodexCredential({
+    codexHome: home,
+    configText: text,
+    providerId,
+    envKey,
+    executeCredentialHelper: false,
+    preferConfiguredHelper: true,
+  });
   const apiKey = credential.apiKey;
   if (!baseUrl || !model || !apiKey) return null;
   return {
@@ -229,13 +285,30 @@ async function readActiveCodexProviderId(codexHome?: string): Promise<string> {
   return readTopLevelTomlString(text, "model_provider") || "";
 }
 
-async function readCodexConfigProviderSecret(providerId: string, codexHome?: string): Promise<{ baseUrl: string; apiKey: string; credentialSource: string | null } | null> {
+async function readCodexConfigProviderSecret(
+  providerId: string,
+  requestedBaseUrl: string,
+  codexHome?: string,
+  resolveCredential = true,
+): Promise<{ baseUrl: string; apiKey: string; credentialSource: string | null } | null> {
+  if (!providerId) return null;
   const home = resolveProviderConfigDirectory(codexHome, ".codex");
   const text = await readOptionalFile(path.join(home, "config.toml"));
   const section = readTomlSection(text, modelProviderSection(providerId));
   const baseUrl = readTomlString(section, "base_url") || "";
+  // Config-owned credentials belong to the route that declares them. Resolve (and potentially
+  // execute) them only after both the provider id and destination are known to match.
+  if (!baseUrl || (requestedBaseUrl && normalizeBaseUrl(baseUrl) !== requestedBaseUrl)) return null;
+  if (!resolveCredential) return { baseUrl, apiKey: "", credentialSource: null };
   const envKey = readTomlString(section, "env_key") || "";
-  const credential = await resolveCodexCredential({ codexHome: home, configText: text, providerId, envKey });
+  const credential = await resolveCodexCredential({
+    codexHome: home,
+    configText: text,
+    providerId,
+    envKey,
+    allowOtherProviders: false,
+    executeCredentialHelper: true,
+  });
   return baseUrl || credential.apiKey ? { baseUrl, apiKey: credential.apiKey, credentialSource: credential.source } : null;
 }
 
@@ -251,9 +324,30 @@ async function resolveCodexCredential(options: {
   explicitSource?: string;
   /** Set to false when a caller must not borrow another provider's credential. */
   allowOtherProviders?: boolean;
-}): Promise<{ apiKey: string; source: string | null }> {
+  /** Provider-owned commands run only when the caller explicitly opts in. */
+  executeCredentialHelper?: boolean;
+  /** Do not let readable fallback credentials hide a configured provider helper. */
+  preferConfiguredHelper?: boolean;
+}): Promise<ResolvedCodexCredential> {
   const explicitKey = options.explicitKey?.trim() ?? "";
   if (explicitKey) return { apiKey: explicitKey, source: options.explicitSource || "API key field" };
+
+  const commandAuth = options.providerId ? readCodexCommandAuth(options.configText, options.providerId) : null;
+  let configuredCommandSource: string | null = null;
+  if (commandAuth) {
+    const source = `config.toml ${options.providerId}.auth.command`;
+    if (options.executeCredentialHelper !== true) {
+      configuredCommandSource = source;
+      if (options.preferConfiguredHelper) {
+        return { apiKey: "", source, configured: true };
+      }
+    } else {
+      return {
+        apiKey: await runProviderCredentialCommand(commandAuth),
+        source,
+      };
+    }
+  }
 
   const section = options.providerId ? readTomlSection(options.configText, modelProviderSection(options.providerId)) : "";
   const inline = readInlineCodexKey(section);
@@ -282,26 +376,20 @@ async function resolveCodexCredential(options: {
   const configuredEnvKey = options.envKey || readTomlString(section, "env_key") || "";
   const envKeys = [...new Set([configuredEnvKey, OFFICIAL_CODEX_AUTH_ENV_KEY, ...CODEX_FALLBACK_ENV_KEYS].filter(Boolean))];
   const policy = readTomlSection(options.configText, "[shell_environment_policy.set]");
-  for (const key of envKeys) {
-    const value = readTomlString(policy, key);
-    if (value) return { apiKey: value, source: `config.toml shell_environment_policy.set.${key}` };
-  }
-
   const authFile = readCodexAuthKeys(await readOptionalFile(path.join(options.codexHome, "auth.json")));
-  for (const key of envKeys) {
-    if (authFile[key]) return { apiKey: authFile[key], source: `auth.json ${key}` };
-  }
-
   const dotEnv = parseDotEnv(await readOptionalFile(path.join(options.codexHome, ".env")));
-  for (const key of envKeys) {
-    if (dotEnv[key]) return { apiKey: dotEnv[key], source: `.env ${key}` };
-  }
-
   for (const key of envKeys) {
     const value = process.env[key]?.trim();
     if (value) return { apiKey: value, source: `environment ${key}` };
+    const configured = readTomlString(policy, key);
+    if (configured) return { apiKey: configured, source: `config.toml shell_environment_policy.set.${key}` };
+    if (authFile[key]) return { apiKey: authFile[key], source: `auth.json ${key}` };
+    if (dotEnv[key]) return { apiKey: dotEnv[key], source: `.env ${key}` };
   }
 
+  // A configured helper belongs to this provider. Report it before considering sibling
+  // providers, but only after checking readable credentials owned by this provider.
+  if (configuredCommandSource) return { apiKey: "", source: configuredCommandSource, configured: true };
   if (options.allowOtherProviders === false) return { apiKey: "", source: null };
   return borrowCodexCredentialFromOtherProviders(options);
 }
@@ -315,7 +403,9 @@ async function borrowCodexCredentialFromOtherProviders(options: {
   codexHome: string;
   configText: string;
   providerId?: string;
-}): Promise<{ apiKey: string; source: string | null }> {
+  executeCredentialHelper?: boolean;
+  preferConfiguredHelper?: boolean;
+}): Promise<ResolvedCodexCredential> {
   const activeProviderId = readTopLevelTomlString(options.configText, "model_provider") || "";
   const candidates = [
     ...(activeProviderId && activeProviderId !== options.providerId ? [activeProviderId] : []),
@@ -329,8 +419,13 @@ async function borrowCodexCredentialFromOtherProviders(options: {
       configText: options.configText,
       providerId: candidate,
       allowOtherProviders: false,
+      executeCredentialHelper: options.executeCredentialHelper,
+      preferConfiguredHelper: options.preferConfiguredHelper,
     });
     if (credential.apiKey) return { apiKey: credential.apiKey, source: `${credential.source} (provider ${candidate})` };
+    // A helper is scoped to its own provider. It blocks borrowing credentials from
+    // providers behind it, but must not make the requested route look authenticated.
+    if (credential.configured) return { apiKey: "", source: null };
   }
   return { apiKey: "", source: null };
 }
@@ -479,42 +574,65 @@ async function applyGeneratedCodexProvider(options: {
 
   if (!apiConfig.customBaseUrl) throw new Error(`Base URL is required to apply ${apiConfig.customProviderName}.`);
 
-  await mkdir(backupDir, { recursive: true });
-  const backupPaths = await backupExistingTargets([
-    { target: authTarget, backup: path.join(backupDir, `auth.json.before-${providerId}-${stamp}`) },
-    { target: configTarget, backup: path.join(backupDir, `config.toml.before-${providerId}-${stamp}`) },
-  ]);
-
   const activeConfigText = await readOptionalFile(configTarget);
-  const credential = await resolveCodexCredential({
-    codexHome,
-    configText: activeConfigText,
-    providerId,
-    explicitKey: apiConfig.customApiKey,
-  });
-  if (!credential.apiKey) throw new Error(`No API key was found for ${apiConfig.customProviderName}.`);
+  const currentProviderSection = readTomlSection(activeConfigText, modelProviderSection(providerId));
+  const currentBaseUrl = readTomlString(currentProviderSection, "base_url") || "";
+  const currentRouteMatches = Boolean(currentBaseUrl)
+    && normalizeBaseUrl(currentBaseUrl) === normalizeBaseUrl(apiConfig.customBaseUrl);
+  const commandAuth = currentRouteMatches ? readCodexCommandAuth(activeConfigText, providerId) : null;
+  // An existing helper remains authoritative unless the user explicitly enters a replacement
+  // key. In particular, never persist a generic environment/auth.json fallback for this route.
+  const useCommandAuth = Boolean(commandAuth && !apiConfig.customApiKey.trim());
+  const explicitKey = apiConfig.customApiKey.trim();
+  const credential: ResolvedCodexCredential = useCommandAuth
+    ? {
+        apiKey: "",
+        source: `config.toml ${providerId}.auth.command`,
+        configured: true,
+      }
+    : explicitKey || currentRouteMatches
+      ? await resolveCodexCredential({
+          codexHome,
+          configText: activeConfigText,
+          providerId,
+          explicitKey,
+          allowOtherProviders: false,
+          // Applying a route must never turn a short-lived helper token into a persisted API key.
+          executeCredentialHelper: false,
+        })
+      : { apiKey: "", source: null };
+  if (!useCommandAuth && !credential.apiKey) throw new Error(`No API key was found for ${apiConfig.customProviderName}.`);
   const effectiveConfig = { ...apiConfig, customApiKey: credential.apiKey };
   const baseConfigText = activeConfigText.trim() ? activeConfigText : generatedCodexConfig(effectiveConfig, providerId);
   const expectedBaseUrl = apiConfig.customApiFormat === "openai_chat" && options.chatProxyBaseUrl
     ? options.chatProxyBaseUrl
     : apiConfig.customBaseUrl;
 
-  // A `requires_openai_auth` provider reads its bearer token from auth.json, so writing
-  // config.toml alone leaves Codex itself without a usable credential.
-  const previousAuthText = await readOptionalFile(authTarget);
-  await writeVerifiedConfig({
-    targetPath: authTarget,
-    contents: codexAuthJson(previousAuthText, credential.apiKey),
-    verify: async () => {
-      const written = readCodexAuthKeys(await readOptionalFile(authTarget));
-      if (written[OFFICIAL_CODEX_AUTH_ENV_KEY] !== credential.apiKey) throw new Error("auth.json credential was not written");
-    },
-  });
+  await mkdir(backupDir, { recursive: true });
+  const backupPaths = await backupExistingTargets([
+    ...(!useCommandAuth ? [{ target: authTarget, backup: path.join(backupDir, `auth.json.before-${providerId}-${stamp}`) }] : []),
+    { target: configTarget, backup: path.join(backupDir, `config.toml.before-${providerId}-${stamp}`) },
+  ]);
+
+  let previousAuthText = "";
+  if (!useCommandAuth) {
+    // A `requires_openai_auth` provider reads its bearer token from auth.json, so writing
+    // config.toml alone leaves Codex itself without a usable credential.
+    previousAuthText = await readOptionalFile(authTarget);
+    await writeVerifiedConfig({
+      targetPath: authTarget,
+      contents: codexAuthJson(previousAuthText, credential.apiKey),
+      verify: async () => {
+        const written = readCodexAuthKeys(await readOptionalFile(authTarget));
+        if (written[OFFICIAL_CODEX_AUTH_ENV_KEY] !== credential.apiKey) throw new Error("auth.json credential was not written");
+      },
+    });
+  }
 
   try {
     await writeVerifiedConfig({
       targetPath: configTarget,
-      contents: applyCodexProviderConfig(baseConfigText, effectiveConfig, providerId, options.chatProxyBaseUrl),
+      contents: applyCodexProviderConfig(baseConfigText, effectiveConfig, providerId, options.chatProxyBaseUrl, useCommandAuth),
       verify: async () => {
         const snapshot = await loadCodexConfigSnapshot(codexHome);
         const provider = snapshot.providers.find((item) => item.id === providerId);
@@ -529,11 +647,13 @@ async function applyGeneratedCodexProvider(options: {
       },
     });
   } catch (error) {
-    if (previousAuthText) await writeFile(authTarget, previousAuthText, { mode: 0o600 });
-    else await rm(authTarget, { force: true });
+    if (!useCommandAuth) {
+      if (previousAuthText) await writeFile(authTarget, previousAuthText, { mode: 0o600 });
+      else await rm(authTarget, { force: true });
+    }
     throw error;
   }
-  await chmodIfExists(authTarget, 0o600);
+  if (!useCommandAuth) await chmodIfExists(authTarget, 0o600);
   await chmod(configTarget, 0o600);
 
   return {
@@ -581,7 +701,13 @@ function applyCodexOfficialConfigOverrides(text: string): string {
   return next.endsWith("\n") ? next : `${next}\n`;
 }
 
-function applyCodexProviderConfig(text: string, apiConfig: ApiConfig, providerId: string, chatProxyBaseUrl?: string): string {
+function applyCodexProviderConfig(
+  text: string,
+  apiConfig: ApiConfig,
+  providerId: string,
+  chatProxyBaseUrl?: string,
+  useCommandAuth = false,
+): string {
   const baseUrl = apiConfig.customApiFormat === "openai_chat" && chatProxyBaseUrl ? chatProxyBaseUrl : apiConfig.customBaseUrl;
   let next = removeTopLevelTomlKey(text, "experimental_bearer_token");
   next = replaceTopLevelString(next, "model_provider", providerId);
@@ -590,9 +716,17 @@ function applyCodexProviderConfig(text: string, apiConfig: ApiConfig, providerId
   next = replaceOrInsertSectionString(next, sectionHeader, "name", apiConfig.customProviderName);
   if (baseUrl) next = replaceOrInsertSectionString(next, sectionHeader, "base_url", baseUrl);
   next = replaceOrInsertSectionString(next, sectionHeader, "wire_api", "responses");
-  next = replaceOrInsertSectionLiteral(next, sectionHeader, "requires_openai_auth", "true");
-  if (apiConfig.customApiKey) {
-    next = replaceOrInsertSectionString(next, sectionHeader, "experimental_bearer_token", apiConfig.customApiKey);
+  const authSectionHeader = `${sectionHeader.slice(0, -1)}.auth]`;
+  if (useCommandAuth) {
+    for (const key of ["requires_openai_auth", "env_key", "experimental_bearer_token"]) {
+      next = removeTomlSectionKey(next, sectionHeader, key);
+    }
+  } else {
+    next = removeTomlSection(next, authSectionHeader);
+    next = replaceOrInsertSectionLiteral(next, sectionHeader, "requires_openai_auth", "true");
+    if (apiConfig.customApiKey) {
+      next = replaceOrInsertSectionString(next, sectionHeader, "experimental_bearer_token", apiConfig.customApiKey);
+    }
   }
   return next.endsWith("\n") ? next : `${next}\n`;
 }
@@ -620,7 +754,7 @@ function normalizeBaseUrl(baseUrl: string | null): string {
 
 function readCodexModelProviders(text: string): CodexConfigProviderEntry[] {
   const providers: CodexConfigProviderEntry[] = [];
-  const sectionPattern = /^\s*\[model_providers\.([A-Za-z0-9_-]+|"(?:\\.|[^"\\])+")\]\s*$/;
+  const sectionPattern = /^\s*\[model_providers\.([A-Za-z0-9_-]+|"(?:\\.|[^"\\])+")\]\s*(?:#.*)?$/;
   const lines = text.split(/\r?\n/);
   for (let index = 0; index < lines.length; index += 1) {
     const match = lines[index].match(sectionPattern);
@@ -682,6 +816,24 @@ function modelProviderSection(providerId: string): string {
     : `[model_providers.${tomlString(providerId)}]`;
 }
 
+function readCodexCommandAuth(text: string, providerId: string): {
+  command: string;
+  args: string[];
+  timeoutMs?: number;
+  cwd?: string;
+} | null {
+  const parentSection = modelProviderSection(providerId);
+  const authSection = readTomlSection(text, `${parentSection.slice(0, -1)}.auth]`);
+  const command = readTomlString(authSection, "command");
+  if (!command) return null;
+  return {
+    command,
+    args: readTomlStringArray(authSection, "args") ?? [],
+    timeoutMs: readTomlNumber(authSection, "timeout_ms") ?? undefined,
+    cwd: readTomlString(authSection, "cwd") ?? undefined,
+  };
+}
+
 function replaceTopLevelString(text: string, key: string, value: string): string {
   const line = `${key} = ${tomlString(value)}`;
   const pattern = new RegExp(`^${escapeRegExp(key)}\\s*=.*$`, "m");
@@ -701,13 +853,36 @@ function removeTopLevelTomlKey(text: string, key: string): string {
     .join("\n");
 }
 
+function removeTomlSectionKey(text: string, sectionHeader: string, key: string): string {
+  const lines = text.split(/\r?\n/);
+  const sectionStart = lines.findIndex((line) => isTomlSectionHeader(line, sectionHeader));
+  if (sectionStart < 0) return text;
+  let sectionEnd = lines.findIndex((line, index) => index > sectionStart && /^\s*\[/.test(line));
+  if (sectionEnd < 0) sectionEnd = lines.length;
+  const pattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=`);
+  for (let index = sectionEnd - 1; index > sectionStart; index -= 1) {
+    if (pattern.test(lines[index])) lines.splice(index, 1);
+  }
+  return lines.join("\n");
+}
+
+function removeTomlSection(text: string, sectionHeader: string): string {
+  const lines = text.split(/\r?\n/);
+  const sectionStart = lines.findIndex((line) => isTomlSectionHeader(line, sectionHeader));
+  if (sectionStart < 0) return text;
+  let sectionEnd = lines.findIndex((line, index) => index > sectionStart && /^\s*\[/.test(line));
+  if (sectionEnd < 0) sectionEnd = lines.length;
+  lines.splice(sectionStart, sectionEnd - sectionStart);
+  return lines.join("\n");
+}
+
 function replaceOrInsertSectionString(text: string, sectionHeader: string, key: string, value: string): string {
   return replaceOrInsertSectionLiteral(text, sectionHeader, key, tomlString(value));
 }
 
 function replaceOrInsertSectionLiteral(text: string, sectionHeader: string, key: string, value: string): string {
   const lines = text.split(/\r?\n/);
-  let sectionStart = lines.findIndex((line) => line.trim() === sectionHeader);
+  let sectionStart = lines.findIndex((line) => isTomlSectionHeader(line, sectionHeader));
   if (sectionStart < 0) {
     lines.push("", sectionHeader);
     sectionStart = lines.length - 1;
@@ -751,7 +926,7 @@ async function readOptionalFile(filePath: string): Promise<string> {
 
 function readTomlSection(text: string, sectionHeader: string): string {
   const lines = text.split(/\r?\n/);
-  const start = lines.findIndex((line) => line.trim() === sectionHeader);
+  const start = lines.findIndex((line) => isTomlSectionHeader(line, sectionHeader));
   if (start < 0) return "";
   const sectionLines: string[] = [];
   for (let i = start + 1; i < lines.length; i += 1) {
@@ -761,11 +936,35 @@ function readTomlSection(text: string, sectionHeader: string): string {
   return sectionLines.join("\n");
 }
 
+function isTomlSectionHeader(line: string, sectionHeader: string): boolean {
+  const trimmed = line.trimStart();
+  if (!trimmed.startsWith(sectionHeader)) return false;
+  const suffix = trimmed.slice(sectionHeader.length).trimStart();
+  return suffix.length === 0 || suffix.startsWith("#");
+}
+
 function readTomlString(text: string, key: string): string | null {
   const pattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=\\s*(.+?)\\s*$`, "m");
   const rawValue = text.match(pattern)?.[1];
   if (!rawValue) return null;
   return parseTomlString(rawValue);
+}
+
+function readTomlStringArray(text: string, key: string): string[] | null {
+  const pattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=\\s*\\[([\\s\\S]*?)\\]`, "m");
+  const body = text.match(pattern)?.[1];
+  if (body === undefined) return null;
+  return splitTomlCommaList(body)
+    .map((item) => parseTomlString(item))
+    .filter((item): item is string => item !== null);
+}
+
+function readTomlNumber(text: string, key: string): number | null {
+  const pattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=\\s*(\\d+)\\s*$`, "m");
+  const value = text.match(pattern)?.[1];
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function readTomlInlineTable(text: string, key: string): Record<string, string> {
