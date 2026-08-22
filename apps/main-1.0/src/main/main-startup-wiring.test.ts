@@ -54,6 +54,7 @@ describe("main process startup wiring", () => {
     expect(source).toContain('{ allowSsh: session.environmentKind === "ssh" }');
     expect(source).toContain("createSourceRemoteRestoreDependencies(environment, progress)");
     expect(source).toContain('environment.kind === "ssh" ? inspectSshMigrationCli(environment, target)');
+    expect(source).toContain("getRemoteMigrationCliVersionCommand(command, args)");
     expect(source).toContain('const sshArgs = buildRemoteSyncSshArgs(environment, "").slice(0, -1)');
     expect(source).toContain("await openResumeInTerminal(session, getSettings(), { sshArgs })");
   });

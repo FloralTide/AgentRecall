@@ -1,8 +1,19 @@
 import { describe, expect, it } from "vitest";
 import type { SessionSearchResult } from "./types";
-import { defaultSettings, getResumeCommand, mergeAppSettings } from "./platform";
+import {
+  defaultSettings,
+  getRemoteMigrationCliVersionCommand,
+  getResumeCommand,
+  mergeAppSettings,
+} from "./platform";
 
 describe("app settings", () => {
+  it("loads NVM before probing a migration CLI over SSH", () => {
+    expect(getRemoteMigrationCliVersionCommand("codex", ["--version"])).toBe(
+      'bash -lc \'if [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; fi; codex --version\'',
+    );
+  });
+
   it("keeps WorkBuddy indexing opt-in while accepting an explicit enable", () => {
     expect(defaultSettings.includeWorkBuddy).toBe(false);
     expect(mergeAppSettings(defaultSettings, { includeWorkBuddy: true }).includeWorkBuddy).toBe(true);

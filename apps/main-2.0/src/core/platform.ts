@@ -1509,6 +1509,12 @@ function migrationCliVersionErrorMessage(target: MigrationTarget, binary: string
   return `${prefix} --version failed for ${binary}.`;
 }
 
+export function getRemoteMigrationCliVersionCommand(command: string, args: string[]): string {
+  const invocation = buildShellCommand(command, args, null, { shell: "posix", withCwd: false });
+  const script = `if [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; fi; ${invocation}`;
+  return `bash -lc ${shellQuote(script)}`;
+}
+
 export async function inspectMigrationCli(
   target: MigrationTarget,
   settings: AppSettings,
