@@ -17,6 +17,7 @@ const LEGACY_FUNCTION_OUTPUT_ID = /^fco_[0-9a-f]{64}$/i;
 const REPAIRED_FUNCTION_CALL_ID = /^fc-[0-9a-f]{64}$/i;
 const REPAIRED_FUNCTION_OUTPUT_ID = /^fco-[0-9a-f]{64}$/i;
 const MIGRATED_CALL_ID = /^call_migrated_[0-9a-f]{24}$/i;
+const LEGACY_ROLLOUT_FILE_NAME = /^(rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})-\d{3}Z-([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.jsonl$/i;
 
 export interface CodexMigrationRepairResult {
   scannedFiles: number;
@@ -40,7 +41,8 @@ export async function repairLegacyAgentRecallCodexRollouts(
       result.scannedFiles += 1;
       try {
         const repairedItemIds = await repairLegacyRolloutFile(filePath);
-        if (repairedItemIds > 0) {
+        const renamed = await repairLegacyRolloutFileName(filePath);
+        if (repairedItemIds > 0 || renamed) {
           result.repairedFiles += 1;
           result.repairedItemIds += repairedItemIds;
         }
@@ -52,6 +54,28 @@ export async function repairLegacyAgentRecallCodexRollouts(
   }
 
   return result;
+}
+
+async function repairLegacyRolloutFileName(filePath: string): Promise<boolean> {
+  const match = LEGACY_ROLLOUT_FILE_NAME.exec(path.basename(filePath));
+  if (!match) return false;
+
+  const firstRow = await readFirstJsonlRow(filePath);
+  const firstPayload = record(firstRow?.payload);
+  const cliVersion = stringField(firstPayload, "cli_version");
+  const sessionId = stringField(firstPayload, "id");
+  if (
+    firstRow?.type !== "session_meta"
+    || !AGENT_RECALL_ORIGINATORS.has(stringField(firstPayload, "originator"))
+    || (cliVersion !== "migration" && cliVersion !== REPAIRED_CLI_VERSION)
+    || sessionId.toLowerCase() !== match[2].toLowerCase()
+  ) {
+    return false;
+  }
+
+  const canonicalPath = path.join(path.dirname(filePath), `${match[1]}-${match[2]}.jsonl`);
+  await fs.promises.rename(filePath, canonicalPath);
+  return true;
 }
 
 async function listJsonlFiles(root: string): Promise<string[]> {
