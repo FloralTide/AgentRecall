@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -32,24 +33,37 @@ export function runtimeInputsSidecarName(version) {
   return `openviking-runtime-${version}-inputs.json`;
 }
 
-export async function loadOpenVikingRuntimeInputs({ configPath, rootDirectory = process.cwd() }) {
+export async function loadOpenVikingRuntimeInputs({
+  configPath,
+  rootDirectory = process.cwd(),
+  readInput = (filePath) => readFile(filePath),
+  legacyNodeDependencies,
+}) {
   const root = path.resolve(rootDirectory);
   const resolvedConfig = path.resolve(configPath);
   assertPathInside(root, resolvedConfig, "runtime input config");
-  const configBytes = await readFile(resolvedConfig);
+  const configName = slashPath(path.relative(root, resolvedConfig));
+  const configBytes = await readInput(resolvedConfig, configName);
   const config = JSON.parse(configBytes.toString("utf8"));
-  validateRuntimeInputConfig(config);
+  const nodeDependencies = validateRuntimeInputConfig(config, legacyNodeDependencies);
 
   const fingerprintFiles = [...config.fingerprintFiles].sort();
-  const inputs = [{ name: slashPath(path.relative(root, resolvedConfig)), bytes: configBytes }];
+  const inputs = [{ name: configName, bytes: configBytes }];
   for (const name of fingerprintFiles) {
     const resolved = path.resolve(root, name);
     assertPathInside(root, resolved, `fingerprint input ${name}`);
-    inputs.push({ name, bytes: normalizeRuntimeFingerprintInput(name, await readFile(resolved)) });
+    inputs.push({
+      name,
+      bytes: normalizeRuntimeFingerprintInput(
+        name,
+        await readInput(resolved, name),
+        nodeDependencies,
+      ),
+    });
   }
 
   const hash = createHash("sha256");
-  hash.update("agent-recall-openviking-runtime-inputs-v1\0");
+  hash.update("agent-recall-openviking-runtime-inputs-v2\0");
   for (const input of inputs) {
     hash.update(`${input.name}\0${input.bytes.byteLength}\0`);
     hash.update(input.bytes);
@@ -64,17 +78,102 @@ export async function loadOpenVikingRuntimeInputs({ configPath, rootDirectory = 
   };
 }
 
-function normalizeRuntimeFingerprintInput(name, bytes) {
-  if (name !== "apps/main-2.0/package.json" && name !== "apps/main-2.0/package-lock.json") {
-    return bytes;
+function normalizeRuntimeFingerprintInput(name, bytes, nodeDependencies) {
+  if (name === "apps/main-2.0/package.json") {
+    const parsed = JSON.parse(bytes.toString("utf8"));
+    const dependencies = Object.fromEntries(nodeDependencies.map((dependency) => {
+      const version = parsed.dependencies?.[dependency];
+      if (typeof version !== "string" || !version.trim()) {
+        throw new Error(`OpenViking runtime Node dependency ${dependency} is missing from package.json.`);
+      }
+      return [dependency, version];
+    }));
+    return jsonFingerprintBytes({ dependencies });
+  }
+  if (name === "apps/main-2.0/package-lock.json") {
+    const parsed = JSON.parse(bytes.toString("utf8"));
+    return jsonFingerprintBytes(runtimeDependencyLock(parsed, nodeDependencies));
+  }
+  return bytes;
+}
+
+export function validateRuntimeRevisionChange(baseInputs, currentInputs) {
+  assertToken(baseInputs?.config?.runtimeVersion, "base version");
+  assertToken(currentInputs?.config?.runtimeVersion, "current version");
+  assertFingerprint(baseInputs?.inputFingerprint);
+  assertFingerprint(currentInputs?.inputFingerprint);
+  if (baseInputs.inputFingerprint === currentInputs.inputFingerprint) return;
+  if (baseInputs.config.runtimeVersion === currentInputs.config.runtimeVersion) {
+    throw new Error(
+      "OpenViking runtime inputs changed without a runtime revision bump. "
+      + "Update runtimeVersion before merging.",
+    );
+  }
+}
+
+function runtimeDependencyLock(lock, nodeDependencies) {
+  if (!Number.isInteger(lock?.lockfileVersion) || !lock.packages || typeof lock.packages !== "object") {
+    throw new Error("OpenViking runtime package lock is invalid.");
+  }
+  const rootDependencies = {};
+  const selectedPackages = {};
+  const pending = [];
+  // The app lock also contains Electron, UI, and test packages that never enter the runtime
+  // archive. Keep only the exact npm-resolved closure used to execute the runtime builder.
+  for (const dependency of nodeDependencies) {
+    const version = lock.packages[""]?.dependencies?.[dependency];
+    if (typeof version !== "string" || !version.trim()) {
+      throw new Error(`OpenViking runtime Node dependency ${dependency} is missing from package-lock.json.`);
+    }
+    rootDependencies[dependency] = version;
+    pending.push(resolveLockedDependency(lock.packages, "", dependency, true));
   }
 
-  const parsed = JSON.parse(bytes.toString("utf8"));
-  parsed.version = "<release-version>";
-  if (name.endsWith("package-lock.json") && parsed.packages?.[""]) {
-    parsed.packages[""].version = "<release-version>";
+  while (pending.length > 0) {
+    const packagePath = pending.shift();
+    if (selectedPackages[packagePath]) continue;
+    const record = lock.packages[packagePath];
+    if (!record || typeof record !== "object") {
+      throw new Error(`OpenViking runtime package lock is missing ${packagePath}.`);
+    }
+    selectedPackages[packagePath] = record;
+    for (const dependency of Object.keys(record.dependencies ?? {}).sort()) {
+      pending.push(resolveLockedDependency(lock.packages, packagePath, dependency, true));
+    }
+    for (const dependency of [
+      ...Object.keys(record.optionalDependencies ?? {}),
+      ...Object.keys(record.peerDependencies ?? {}),
+    ].sort()) {
+      const resolved = resolveLockedDependency(lock.packages, packagePath, dependency, false);
+      if (resolved) pending.push(resolved);
+    }
   }
-  return Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`);
+
+  return {
+    lockfileVersion: lock.lockfileVersion,
+    packages: {
+      "": { dependencies: rootDependencies },
+      ...Object.fromEntries(Object.entries(selectedPackages).sort(([left], [right]) => left.localeCompare(right))),
+    },
+  };
+}
+
+function resolveLockedDependency(packages, ownerPath, dependency, required) {
+  let scope = ownerPath;
+  while (scope) {
+    const candidate = `${scope}/node_modules/${dependency}`;
+    if (packages[candidate]) return candidate;
+    const ancestor = scope.lastIndexOf("/node_modules/");
+    scope = ancestor >= 0 ? scope.slice(0, ancestor) : "";
+  }
+  const rootCandidate = `node_modules/${dependency}`;
+  if (packages[rootCandidate]) return rootCandidate;
+  if (!required) return null;
+  throw new Error(`OpenViking runtime package lock cannot resolve ${dependency} from ${ownerPath || "the root"}.`);
+}
+
+function jsonFingerprintBytes(value) {
+  return Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
 }
 
 export function createRuntimeInputsSidecar({ runtimeVersion, inputFingerprint, runtimeAssets }) {
@@ -332,15 +431,28 @@ async function probeFromFiles({ releaseJson, smallAssetDirectory, expectedTag, i
   });
 }
 
-function validateRuntimeInputConfig(config) {
+function validateRuntimeInputConfig(config, legacyNodeDependencies) {
   if (!config || typeof config !== "object" || Array.isArray(config) || config.schemaVersion !== 1) {
     throw new Error("OpenViking runtime input config is invalid.");
   }
   assertToken(config.runtimeVersion, "version");
   assertToken(config.nodeVersion, "Node.js version");
   assertToken(config.rustToolchain, "Rust toolchain");
-  if (!Array.isArray(config.fingerprintFiles) || !Array.isArray(config.targets)) {
+  const configuredNodeDependencies = config.nodeDependencies ?? legacyNodeDependencies;
+  if (!Array.isArray(configuredNodeDependencies)
+    || configuredNodeDependencies.length === 0
+    || !Array.isArray(config.fingerprintFiles)
+    || !Array.isArray(config.targets)) {
     throw new Error("OpenViking runtime input config is incomplete.");
+  }
+  const nodeDependencies = new Set();
+  for (const dependency of configuredNodeDependencies) {
+    if (typeof dependency !== "string"
+      || !/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/u.test(dependency)
+      || nodeDependencies.has(dependency)) {
+      throw new Error("OpenViking runtime Node dependency list is invalid.");
+    }
+    nodeDependencies.add(dependency);
   }
   const fingerprints = new Set();
   for (const name of config.fingerprintFiles) {
@@ -375,6 +487,7 @@ function validateRuntimeInputConfig(config) {
     actualTargets.add(key);
   }
   if (actualTargets.size !== expectedTargets.size) throw new Error("OpenViking runtime target matrix is incomplete.");
+  return [...nodeDependencies];
 }
 
 function isTrustedPythonUrl(value) {
@@ -462,6 +575,23 @@ async function main(args) {
   if (!configPath) throw new Error("--config is required.");
   const inputs = await loadOpenVikingRuntimeInputs({ configPath });
 
+  const revisionBase = argumentValue(args, "--check-revision-base");
+  if (revisionBase) {
+    if (!/^[0-9a-f]{40}$/iu.test(revisionBase)) {
+      throw new Error("OpenViking runtime revision base must be a full Git commit SHA.");
+    }
+    const rootDirectory = process.cwd();
+    const baseInputs = await loadOpenVikingRuntimeInputs({
+      configPath,
+      rootDirectory,
+      legacyNodeDependencies: ["tar"],
+      readInput: (_filePath, repositoryPath) => readGitFile(rootDirectory, revisionBase, repositoryPath),
+    });
+    validateRuntimeRevisionChange(baseInputs, inputs);
+    process.stdout.write("OpenViking runtime revision check passed.\n");
+    return;
+  }
+
   if (args.includes("--describe")) {
     process.stdout.write(`${JSON.stringify({
       runtimeVersion: inputs.config.runtimeVersion,
@@ -515,6 +645,23 @@ async function main(args) {
     return;
   }
   process.stdout.write(`${result.runtimeSourceTag}\n`);
+}
+
+function readGitFile(rootDirectory, revision, repositoryPath) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "git",
+      ["show", `${revision}:${repositoryPath}`],
+      { cwd: rootDirectory, encoding: null, maxBuffer: 32 * 1024 * 1024 },
+      (error, stdout) => {
+        if (error) {
+          reject(new Error(`Could not read ${repositoryPath} from base revision ${revision.slice(0, 12)}.`));
+          return;
+        }
+        resolve(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
+      },
+    );
+  });
 }
 
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : "";
