@@ -54,6 +54,7 @@ import type {
   EnvironmentSyncState,
   EnvironmentUpsertInput,
   IndexedSession,
+  IndexedSessionFileState,
   ProjectQueryOptions,
   ProjectSummary,
   ProjectTagEntry,
@@ -205,7 +206,7 @@ export class SessionStore {
 
   async listIndexedSessionFiles(
     environmentId = "local",
-  ): Promise<Array<{ sessionKey: string; source: SessionSource; filePath: string; fileMtimeMs: number; fileSize: number; indexedAt: number }>> {
+  ): Promise<IndexedSessionFileState[]> {
     await this.ready;
     return this.sessions.listIndexedSessionFiles(environmentId);
   }

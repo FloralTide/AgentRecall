@@ -164,6 +164,31 @@ describe("PostgreSQL Turn search", () => {
     expect(toolOnly.sessions).toEqual([]);
   });
 
+  it("does not show partial message hits when only Session metadata matches every term", async () => {
+    await repository.upsertIndexedSession(
+      session("codex:metadata-only", "重启服务 剩下下载文件 筛选", "2026-07-24T09:00:00.000Z"),
+      [
+        message("user", "重启服务", "2026-07-24T09:00:00.000Z", 0),
+        message("assistant", "服务已重新启动", "2026-07-24T09:00:01.000Z", 1),
+        message("user", "剩下下载文件", "2026-07-24T09:01:00.000Z", 2),
+        message("assistant", "下一步再讨论筛选", "2026-07-24T09:01:01.000Z", 3),
+      ],
+    );
+
+    const page = await searchRepository.searchSessionPage({
+      query: "重启服务 剩下下载文件 筛选",
+      excludeSubagents: true,
+    });
+
+    expect(page.sessions).toHaveLength(1);
+    expect(page.sessions[0]).toMatchObject({
+      sessionKey: "codex:metadata-only",
+      metadataMatch: "title",
+      messageMatchCount: 0,
+      matchHits: [],
+    });
+  });
+
   it("supports exact phrases, source/date filters, and paginated Session totals", async () => {
     const phrase = await searchRepository.searchSessionPage({
       query: "\"retry timeout\"",

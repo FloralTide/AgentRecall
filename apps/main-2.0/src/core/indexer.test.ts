@@ -375,12 +375,11 @@ describe("indexer", () => {
       );
       await database.query(`
         update agent_recall.sessions
-        set file_mtime_ms = 0,
-            content_indexed_mtime_ms = 0,
+        set content_indexed_mtime_ms = 0,
             content_indexed_size = 0
         where session_key = 'codex:codex-freshness'
       `);
-      expect((await store.listIndexedSessionFiles())[0].fileMtimeMs).toBe(0);
+      expect((await store.listIndexedSessionFiles())[0].fileMtimeMs).toBe(existing.fileMtimeMs);
 
       const rebuilt = await syncDefaultSessionsInBatches(store, {
         batchSize: 1,
@@ -394,6 +393,36 @@ describe("indexer", () => {
         loadOptions: { homeDir },
       });
       expect(warm).toMatchObject({ indexed: 0, skipped: 1, total: 1 });
+    } finally {
+      await store.close();
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rebuilds unchanged source files whose stored Turns use an old derivation", async () => {
+    const database = new PostgresDatabase(new PGliteTestPool(), {
+      migrationLock: false,
+      migrations: POSTGRES_MIGRATIONS,
+    });
+    const store = new SessionStore(database, database.initialize());
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-turn-version-"));
+    try {
+      writeCodexSession(homeDir, "old-turn-version", "versioned search phrase", "Old Turns");
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+      await database.query(`
+        update agent_recall.session_turns
+        set derivation_version = 0,
+            search_text = 'stale derived content'
+        where session_key = 'codex:old-turn-version'
+      `);
+
+      const rebuilt = await syncDefaultSessionsInBatches(store, {
+        batchSize: 1,
+        loadOptions: { homeDir },
+      });
+
+      expect(rebuilt).toMatchObject({ indexed: 1, skipped: 0, total: 1 });
+      await expect(store.searchSessions({ query: "versioned search phrase", limit: 10 })).resolves.toHaveLength(1);
     } finally {
       await store.close();
       fs.rmSync(homeDir, { recursive: true, force: true });

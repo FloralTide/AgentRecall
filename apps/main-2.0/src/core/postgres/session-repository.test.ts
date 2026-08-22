@@ -620,6 +620,9 @@ describe("PostgresSessionRepository", () => {
       filePath: "/fixtures/session-a.jsonl",
       fileMtimeMs: 200,
       fileSize: 100,
+      contentIndexedMtimeMs: 200,
+      contentIndexedSize: 100,
+      turnDerivationCurrent: true,
       indexedAt: expect.any(Number),
     }]);
   });
