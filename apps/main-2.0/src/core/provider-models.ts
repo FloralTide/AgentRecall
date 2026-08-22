@@ -1,3 +1,5 @@
+import { httpTransportFailureReason } from "./http-transport-error";
+
 export interface ProviderModelProbeRequest {
   baseUrl: string;
   apiKey: string;
@@ -78,48 +80,13 @@ function describeProbeFailure(endpoint: string, error: unknown): ProbeFailure {
     const reason = `no response within ${Math.round(MODEL_PROBE_TIMEOUT_MS / 1000)}s`;
     return { endpoint, error: new Error(`Model detection could not reach ${endpoint}: ${reason}.`), transportReason: reason };
   }
-  const transportReason = transportFailureReason(error);
+  const transportReason = httpTransportFailureReason(error);
   if (!transportReason) return { endpoint, error, transportReason: "" };
   return {
     endpoint,
     error: new Error(`Model detection could not reach ${endpoint}: ${transportReason}.`),
     transportReason,
   };
-}
-
-/** Empty for anything that is not a transport failure, so those errors are re-thrown untouched. */
-function transportFailureReason(error: Error): string {
-  const code = errorCauseCode(error);
-  if (!code) return "";
-  const explanation = TRANSPORT_FAILURE_EXPLANATIONS[code];
-  if (explanation) return `${explanation} (${code})`;
-  const cause = error.cause instanceof Error ? error.cause.message : "";
-  return cause ? `${cause} (${code})` : code;
-}
-
-const TRANSPORT_FAILURE_EXPLANATIONS: Readonly<Record<string, string>> = {
-  ENOTFOUND: "the host name could not be resolved — check the Base URL, or whether this network needs a proxy",
-  EAI_AGAIN: "the host name could not be resolved — check the Base URL, or whether this network needs a proxy",
-  ECONNREFUSED: "nothing accepted the connection on that host and port",
-  ECONNRESET: "the connection was closed before an answer arrived",
-  ETIMEDOUT: "the connection timed out — check whether this network needs a proxy",
-  UND_ERR_CONNECT_TIMEOUT: "the connection timed out — check whether this network needs a proxy",
-  EPROTO: "the TLS handshake failed — check whether the Base URL should use http:// instead",
-  CERT_HAS_EXPIRED: "the server's TLS certificate has expired",
-  DEPTH_ZERO_SELF_SIGNED_CERT: "the server uses a self-signed TLS certificate",
-  UNABLE_TO_VERIFY_LEAF_SIGNATURE: "the server's TLS certificate could not be verified",
-  ERR_INVALID_URL: "that is not a valid URL — a Base URL needs a scheme such as https://",
-};
-
-/** Walks the `cause` chain, because undici nests the OS error one or two levels down. */
-function errorCauseCode(error: Error): string {
-  let current: unknown = error;
-  for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
-    const code = (current as NodeJS.ErrnoException).code;
-    if (typeof code === "string" && code) return code;
-    current = current.cause;
-  }
-  return "";
 }
 
 /** Every endpoint failing the same way is one problem, and should read as one problem. */

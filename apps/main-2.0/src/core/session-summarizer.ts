@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { httpTransportFailureReason } from "./http-transport-error";
 
 // Accepts any role string so non user/assistant rows (e.g. tool output) can be filtered out.
 export interface SummaryInputMessage {
@@ -31,7 +32,11 @@ export interface SummaryEndpoint {
    */
   env?: Record<string, string>;
   onTemporarySession?: (sessionKey: string) => void;
+  /** Main-process transport for direct HTTP providers; Electron injection honors the system proxy. */
+  fetch?: SummaryFetch;
 }
+
+export type SummaryFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface SessionSummaryResult {
   summary: string;
@@ -273,11 +278,17 @@ const REQUEST_TIMEOUT_MS = 60_000;
 
 // Always bounds the request so a hung provider cannot block the (sequential) batch
 // forever — the original symptom of summaries appearing to be "stuck".
-async function postJson(url: string, headers: Record<string, string>, body: unknown, signal?: AbortSignal): Promise<Response> {
+async function postJson(
+  url: string,
+  headers: Record<string, string>,
+  body: unknown,
+  signal?: AbortSignal,
+  fetchImpl: SummaryFetch = fetch,
+): Promise<Response> {
   const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   const merged = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   try {
-    return await fetch(url, {
+    return await fetchImpl(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify(body),
@@ -287,7 +298,11 @@ async function postJson(url: string, headers: Record<string, string>, body: unkn
     if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
       throw new Error(`AI summary request timed out after ${REQUEST_TIMEOUT_MS / 1000}s.`);
     }
-    throw error;
+    if (error instanceof Error) {
+      const reason = httpTransportFailureReason(error) || error.message;
+      throw new Error(`AI summary request could not reach ${url}: ${reason}.`, { cause: error });
+    }
+    throw new Error(`AI summary request could not reach ${url}: ${String(error)}.`);
   }
 }
 
@@ -343,6 +358,7 @@ async function openaiChatCompletion(endpoint: SummaryEndpoint, messages: ChatMes
           stream: false,
         },
         signal,
+        endpoint.fetch,
       ),
     Boolean(effort),
   );
@@ -369,6 +385,7 @@ async function openaiResponsesCompletion(endpoint: SummaryEndpoint, messages: Ch
           stream: false,
         },
         signal,
+        endpoint.fetch,
       ),
     Boolean(effort),
   );
@@ -719,6 +736,7 @@ async function anthropicCompletion(endpoint: SummaryEndpoint, messages: ChatMess
     { "x-api-key": endpoint.apiKey, Authorization: `Bearer ${endpoint.apiKey}`, "anthropic-version": "2023-06-01" },
     { model: endpoint.model, max_tokens: 1024, system, messages: userMessages },
     signal,
+    endpoint.fetch,
   );
   if (!response.ok) {
     const detail = await safeReadText(response);

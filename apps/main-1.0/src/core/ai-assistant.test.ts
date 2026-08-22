@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   extractFallbackKeywords,
   isLocalCliEndpoint,
+  requestAssistantCompletion,
   runAiAssistantFallback,
   runAiAssistantTurn,
   type AiChatMessage,
@@ -15,6 +16,25 @@ const endpoint: SummaryEndpoint = { baseUrl: "http://x", model: "m", apiKey: "k"
 const codexEndpoint: SummaryEndpoint = { baseUrl: "", model: "codex", apiKey: "", apiFormat: "codex_exec", command: "codex" };
 
 describe("runAiAssistantTurn", () => {
+  it("uses the endpoint transport for direct provider requests", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error("global fetch should not be used");
+    }) as typeof fetch;
+    try {
+      const result = await requestAssistantCompletion({
+        ...endpoint,
+        fetch: async () => new Response(JSON.stringify({
+          choices: [{ message: { content: "Connected through app networking." } }],
+        }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      }, [{ role: "user", content: "find a session" }]);
+
+      expect(result).toEqual({ content: "Connected through app networking.", toolCalls: [] });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("executes a tool call, feeds the result back, and returns the final reply with surfaced sessionKeys", async () => {
     // Round 1: model asks to search. Round 2: model answers in plain text.
     const chatTurns: Array<{ content: string; toolCalls: { id: string; name: string; arguments: string }[] }> = [
