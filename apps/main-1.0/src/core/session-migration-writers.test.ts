@@ -426,7 +426,7 @@ describe("writeMigratedSession", () => {
         "2026",
         "06",
         "23",
-        `rollout-2026-06-23T06-07-08-901Z-${SESSION_ID}.jsonl`,
+        `rollout-2026-06-23T06-07-08-${SESSION_ID}.jsonl`,
       ),
     });
     expect(readRows(path.join(homeDir, ".codex", "session_index.jsonl"))).toEqual([

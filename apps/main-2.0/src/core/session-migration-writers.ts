@@ -659,7 +659,7 @@ export function targetFilePath(
     const year = String(now.getUTCFullYear()).padStart(4, "0");
     const month = String(now.getUTCMonth() + 1).padStart(2, "0");
     const day = String(now.getUTCDate()).padStart(2, "0");
-    const safeTimestamp = now.toISOString().replace(/[:.]/g, "-");
+    const safeTimestamp = now.toISOString().slice(0, 19).replaceAll(":", "-");
     return path.join(homeDir, root, "sessions", year, month, day, `rollout-${safeTimestamp}-${sessionId}.jsonl`);
   }
 
