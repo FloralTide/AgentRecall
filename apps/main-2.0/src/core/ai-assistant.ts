@@ -11,7 +11,14 @@
 // and Anthropic /v1/messages) but adds tool support. Network functions are
 // injectable so the tool-call loop is unit-testable without a real provider.
 
-import { isTemperatureUnsupported, requestSummaryCompletion, type ChatMessage, type SummaryEndpoint } from "./session-summarizer";
+import { httpTransportFailureReason } from "./http-transport-error";
+import {
+  isTemperatureUnsupported,
+  requestSummaryCompletion,
+  type ChatMessage,
+  type SummaryEndpoint,
+  type SummaryFetch,
+} from "./session-summarizer";
 
 export type { SummaryEndpoint } from "./session-summarizer";
 
@@ -351,11 +358,17 @@ function defaultToolChatCompletion(
 
 export const requestAssistantCompletion: ToolChatCompletionFn = defaultToolChatCompletion;
 
-async function postJson(url: string, headers: Record<string, string>, body: unknown, signal?: AbortSignal): Promise<Response> {
+async function postJson(
+  url: string,
+  headers: Record<string, string>,
+  body: unknown,
+  signal?: AbortSignal,
+  fetchImpl: SummaryFetch = fetch,
+): Promise<Response> {
   const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   const merged = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   try {
-    return await fetch(url, {
+    return await fetchImpl(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify(body),
@@ -365,7 +378,11 @@ async function postJson(url: string, headers: Record<string, string>, body: unkn
     if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
       throw new Error(`AI assistant request timed out after ${REQUEST_TIMEOUT_MS / 1000}s.`);
     }
-    throw error;
+    if (error instanceof Error) {
+      const reason = httpTransportFailureReason(error) || error.message;
+      throw new Error(`AI assistant request could not reach ${url}: ${reason}.`, { cause: error });
+    }
+    throw new Error(`AI assistant request could not reach ${url}: ${String(error)}.`);
   }
 }
 
@@ -418,6 +435,7 @@ async function openaiToolCompletion(
       { Authorization: `Bearer ${endpoint.apiKey}` },
       { model: endpoint.model, messages: toOpenAiMessages(messages), tools: openaiTools(), ...(includeTemperature ? { temperature: 0.2 } : {}), stream: false },
       signal,
+      endpoint.fetch,
     );
   let response = await request(true);
   if (!response.ok) {
@@ -495,6 +513,7 @@ async function anthropicToolCompletion(
     { "x-api-key": endpoint.apiKey, Authorization: `Bearer ${endpoint.apiKey}`, "anthropic-version": "2023-06-01" },
     { model: endpoint.model, max_tokens: 1024, system, messages: anthropicMessages, tools: anthropicTools() },
     signal,
+    endpoint.fetch,
   );
   if (!response.ok) {
     const detail = await safeReadText(response);
