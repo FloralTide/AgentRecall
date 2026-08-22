@@ -335,6 +335,18 @@ export interface IndexedSession {
   parentSessionId?: string | null;
 }
 
+export interface IndexedSessionFileState {
+  sessionKey: string;
+  source: SessionSource;
+  filePath: string;
+  fileMtimeMs: number;
+  fileSize: number;
+  contentIndexedMtimeMs: number;
+  contentIndexedSize: number;
+  turnDerivationCurrent: boolean;
+  indexedAt: number;
+}
+
 export interface LoadedSession {
   session: IndexedSession;
   messages: SessionMessage[];

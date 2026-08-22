@@ -16,7 +16,7 @@ import { loadDeepSeekCliSessionFile } from "./session-loaders/alternative-source
 import { safeStat } from "./session-loaders/common";
 import { migrationTargetDescriptor } from "./migration-targets";
 import type { SessionStore } from "./session-store";
-import type { LoadedSession, MigrationTarget, SessionEnvironment } from "./types";
+import type { IndexedSessionFileState, LoadedSession, MigrationTarget, SessionEnvironment } from "./types";
 
 export interface IndexStatus {
   running: boolean;
@@ -316,9 +316,9 @@ export async function syncDefaultSessionsInBatches(
       && file.source !== "stepcode-codex"
       && file.source !== "tcodex-cli"
     ) continue;
-    if (file.fileMtimeMs <= 0) continue;
+    if (file.contentIndexedMtimeMs <= 0 || !file.turnDerivationCurrent) continue;
     incrementalCodexFiles.set(file.filePath, {
-      offset: file.fileSize,
+      offset: file.contentIndexedSize,
       sessionKey: file.sessionKey,
     });
   }
@@ -407,18 +407,18 @@ function sessionFileSnapshotKey(filePath: string, source?: LoadedSession["sessio
   return `${source ?? ""}\0${filePath}`;
 }
 
-function sessionFileSnapshots(files: Array<{
-  source: LoadedSession["session"]["source"];
-  filePath: string;
-  fileMtimeMs: number;
-  fileSize: number;
-  indexedAt: number;
-}>): Map<string, SessionFileSnapshot[]> {
+function sessionFileSnapshots(files: readonly IndexedSessionFileState[]): Map<string, SessionFileSnapshot[]> {
   const snapshots = new Map<string, SessionFileSnapshot[]>();
   for (const file of files) {
     const key = sessionFileSnapshotKey(file.filePath, file.source);
     const bucket = snapshots.get(key) ?? [];
-    bucket.push({ fileMtimeMs: file.fileMtimeMs, fileSize: file.fileSize, indexedAt: file.indexedAt });
+    if (file.turnDerivationCurrent) {
+      bucket.push({
+        fileMtimeMs: file.contentIndexedMtimeMs,
+        fileSize: file.contentIndexedSize,
+        indexedAt: file.indexedAt,
+      });
+    }
     snapshots.set(key, bucket);
   }
   return snapshots;
