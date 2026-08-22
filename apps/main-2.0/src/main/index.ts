@@ -41,6 +41,7 @@ import {
   defaultSettings,
   getMigrationResumeProcessSpec,
   getSafeMigrationResumeCommand,
+  getRemoteMigrationCliVersionCommand,
   inspectMigrationCli,
   mergeAppSettings,
   normalizeTerminal,
@@ -1962,7 +1963,7 @@ async function inspectSshMigrationCli(environment: SessionEnvironment, target: M
     { ...settings, claudeBinary: "claude", codexBinary: "codex" },
     (command, args) => runSshSessionCommand(
       environment,
-      [command, ...args].map(quotePosixToken).join(" "),
+      getRemoteMigrationCliVersionCommand(command, args),
     ),
     { platform: "linux" },
   );
