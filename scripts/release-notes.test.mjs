@@ -13,6 +13,7 @@ import {
   probeOpenVikingRuntimeRelease,
   runtimeReleaseAssetNames,
   runtimeInputsSidecarName,
+  validateRuntimeRevisionChange,
   verifyLocalRuntimeAssets,
 } from "../.github/scripts/probe-openviking-runtime-release.mjs";
 import {
@@ -232,6 +233,10 @@ test("workflows require branch notes and publish accumulated changes every day o
   assert.match(qualityWorkflow, /run: node scripts\/release-notes\.mjs check-range/);
   assert.match(qualityWorkflow, /quality-check-scope\.mjs --base "\$BASE_SHA" --head "\$HEAD_SHA" >> "\$GITHUB_OUTPUT"/);
   assert.match(qualityWorkflow, /run: npm run test:repo/);
+  assert.match(
+    qualityWorkflow,
+    /probe-openviking-runtime-release\.mjs[\s\\]*--config \.github\/openviking-runtime-inputs\.json[\s\\]*--check-revision-base "\$BASE_SHA"/,
+  );
   assert.match(qualityWorkflow, /matrix:\s*\$\{\{ fromJSON\(needs\.preflight\.outputs\.matrix\) \}\}/);
   assert.match(qualityWorkflow, /if: needs\.preflight\.outputs\.verify == 'true'/);
   assert.match(qualityWorkflow, /npm run setup:\$\{\{ matrix\.app \}\}/);
@@ -764,11 +769,12 @@ test("OpenViking runtime fingerprint covers the matrix, builder, and dependency 
     "apps/main-2.0/package-lock.json",
     "apps/main-2.0/scripts/build-openviking-runtime.mjs",
   ]);
+  assert.deepEqual(inputs.config.nodeDependencies, ["tar"]);
   assert.equal(inputs.config.nodeVersion, "22.23.1");
   assert.equal(inputs.config.rustToolchain, "1.97.1");
 });
 
-test("OpenViking runtime fingerprint ignores only release version rewrites", async () => {
+test("OpenViking runtime fingerprint tracks builder dependencies without following app-only changes", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "agent-recall-openviking-fingerprint-"));
   const relativeFiles = [
     ".github/openviking-runtime-inputs.json",
@@ -793,6 +799,10 @@ test("OpenViking runtime fingerprint ignores only release version rewrites", asy
     packageManifest.version = "9.8.7";
     packageLock.version = "9.8.7";
     packageLock.packages[""].version = "9.8.7";
+    packageManifest.dependencies.electron = "99.0.0";
+    packageLock.packages[""].dependencies.electron = "99.0.0";
+    packageLock.packages["node_modules/electron"].version = "99.0.0";
+    packageLock.packages["node_modules/electron"].integrity = `sha512-${"e".repeat(32)}`;
     await writeFile(packagePath, `${JSON.stringify(packageManifest, null, 2)}\n`);
     await writeFile(lockPath, `${JSON.stringify(packageLock, null, 2)}\n`);
     assert.equal((await loadInputs()).inputFingerprint, original.inputFingerprint);
@@ -803,6 +813,25 @@ test("OpenViking runtime fingerprint ignores only release version rewrites", asy
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("OpenViking runtime input changes require a new revision before merge", () => {
+  const base = {
+    config: { runtimeVersion: "0.4.11-r6" },
+    inputFingerprint: `sha256:${"a".repeat(64)}`,
+  };
+  assert.doesNotThrow(() => validateRuntimeRevisionChange(base, structuredClone(base)));
+  assert.throws(
+    () => validateRuntimeRevisionChange(base, {
+      config: { runtimeVersion: "0.4.11-r6" },
+      inputFingerprint: `sha256:${"b".repeat(64)}`,
+    }),
+    /inputs changed.*runtime revision/i,
+  );
+  assert.doesNotThrow(() => validateRuntimeRevisionChange(base, {
+    config: { runtimeVersion: "0.4.11-r7" },
+    inputFingerprint: `sha256:${"b".repeat(64)}`,
+  }));
 });
 
 function runQualityCheckScope(paths) {
