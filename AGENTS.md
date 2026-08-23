@@ -87,6 +87,7 @@ Run focused Vitest files from the affected app while iterating, for example `npm
 ## Testing and packaging safety
 
 - Test observable behavior through the owning function, service, IPC boundary, or component. Tests describe the behavior being preserved; when the product behavior changes intentionally, update the obsolete expectation instead of adding compatibility solely for the test.
+- Keep regression coverage minimal. Prefer extending the owning test file, retain only tests that protect a distinct user-visible contract or failure boundary, and remove temporary scaffolding or redundant assertions before submission.
 - Match evidence to risk: focused unit tests for pure logic, integration tests for persistence and IPC, renderer tests for interactions, builds for process-boundary/import changes, and package smokes for install/update surfaces.
 - Tests that exercise installation, update, uninstall, hooks, MCP setup, Skills, session discovery, or agent configuration must use a temporary `HOME`, temporary npm prefix, and synthetic fixtures. Never read, upload, rewrite, or delete the developer's real Claude, Codex, Skills, Supabase, Electron, PostgreSQL, or session data.
 - Do not run global install or uninstall tests against the active Node.js prefix. Build first, install the generated package into a temporary prefix, verify it there, and remove all temporary files and child processes.
