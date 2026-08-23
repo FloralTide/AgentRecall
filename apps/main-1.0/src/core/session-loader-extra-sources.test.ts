@@ -380,6 +380,118 @@ describe("extra session sources", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it("loads Qoder CLI transcripts stored directly under projects/<slug>", () => {
+    const root = tmpDir("qoder-cli-flat");
+    const filePath = path.join(root, "projects", "-Users-me-demo-app", "5a5f525e-99bc-4c95-9f03-de30ef8c9a32.jsonl");
+    writeJsonl(filePath, [
+      { type: "workspace-directories", sessionId: "5a5f525e", directories: ["/Users/me/demo-app"] },
+      {
+        type: "user",
+        uuid: "u1",
+        parentUuid: null,
+        cwd: "/Users/me/demo-app",
+        gitBranch: "main",
+        timestamp: "2026-08-21T10:00:00.000Z",
+        message: { role: "user", content: [{ type: "text", text: "Fix the login bug" }] },
+      },
+      {
+        type: "assistant",
+        uuid: "a1",
+        parentUuid: "u1",
+        cwd: "/Users/me/demo-app",
+        timestamp: "2026-08-21T10:00:05.000Z",
+        message: { role: "assistant", content: [{ type: "text", text: "I will check the auth module." }] },
+      },
+    ]);
+
+    const loaded = loadQoderSessions(root);
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].session).toMatchObject({
+      sessionKey: "qoder:5a5f525e-99bc-4c95-9f03-de30ef8c9a32",
+      source: "qoder",
+      projectPath: "/Users/me/demo-app",
+      gitBranch: "main",
+      firstQuestion: "Fix the login bug",
+    });
+    expect(loaded[0].messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("loads Qoder CLI transcripts from the nested transcript directory and prefers ai-title", () => {
+    const root = tmpDir("qoder-cli-nested");
+    const filePath = path.join(root, "projects", "-Users-me-demo-app", "transcript", "428f5d29.jsonl");
+    writeJsonl(filePath, [
+      { type: "ai-title", sessionId: "428f5d29", aiTitle: "Refactor the auth module" },
+      {
+        type: "user",
+        uuid: "u1",
+        parentUuid: null,
+        cwd: "/Users/me/demo-app",
+        message: { role: "user", content: [{ type: "text", text: "Please refactor auth" }] },
+      },
+    ]);
+
+    const loaded = loadQoderSessions(root);
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].session.rawId).toBe("428f5d29");
+    expect(loaded[0].session.originalTitle).toBe("Refactor the auth module");
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("skips Qoder CLI tool-execution traces that contain no readable messages", () => {
+    const root = tmpDir("qoder-cli-trace");
+    writeJsonl(path.join(root, "projects", "-Users-me-demo-app", "transcript", "trace-only.jsonl"), [
+      {
+        type: "user",
+        uuid: "u1",
+        parentUuid: null,
+        cwd: "/Users/me/demo-app",
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
+      },
+      { type: "progress", uuid: "p1", parentUuid: "u1" },
+      {
+        type: "assistant",
+        uuid: "a1",
+        parentUuid: "u1",
+        cwd: "/Users/me/demo-app",
+        message: { role: "assistant", content: [{ type: "tool_use", id: "t2", name: "Read", input: {} }] },
+      },
+    ]);
+
+    expect(loadQoderSessions(root)).toEqual([]);
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("indexes Qoder IDE and CLI layouts together and skips unrecognised JSONL", () => {
+    const root = tmpDir("qoder-both");
+    writeJsonl(path.join(root, "cache", "projects", "demo-app-1a2b3c4d", "conversation-history", "task-ide", "task-ide.jsonl"), [
+      { role: "user", message: { content: [{ type: "text", text: "IDE question" }] } },
+    ]);
+    writeJsonl(path.join(root, "projects", "-Users-me-demo-app", "cli-session.jsonl"), [
+      {
+        type: "user",
+        uuid: "u1",
+        parentUuid: null,
+        cwd: "/Users/me/demo-app",
+        message: { role: "user", content: [{ type: "text", text: "CLI question" }] },
+      },
+    ]);
+    writeJsonl(path.join(root, "projects", "-Users-me-demo-app", "compaction", "not-a-transcript.jsonl"), [
+      { kind: "summary", tokens: 42 },
+    ]);
+
+    const loaded = loadQoderSessions(root);
+
+    expect(loaded.map((entry) => entry.session.firstQuestion).sort()).toEqual(["CLI question", "IDE question"]);
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   it("loads Hermes sessions from state.db without writing to the source database", () => {
     const root = tmpDir("hermes");
     const dbPath = path.join(root, "state.db");
