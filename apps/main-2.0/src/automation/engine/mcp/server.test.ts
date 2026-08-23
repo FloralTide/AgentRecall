@@ -1,5 +1,6 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -16,6 +17,7 @@ const originalNodeId = process.env.AGENT_RECALL_WORKFLOW_NODE_ID;
 const originalExecutionId = process.env.AGENT_RECALL_WORKFLOW_NODE_EXECUTION_ID;
 const originalReviewRevision = process.env.AGENT_RECALL_WORKFLOW_REVIEW_REVISION;
 const originalScope = process.env.AGENT_RECALL_WORKFLOW_MCP_SCOPE;
+const originalMode = process.env.AGENT_RECALL_MCP_MODE;
 describe("MCP server tools", () => {
   afterEach(() => {
     if (originalEnv === undefined) delete process.env.AGENT_RECALL_WORKFLOW_MCP_BRIDGE;
@@ -38,6 +40,8 @@ describe("MCP server tools", () => {
     else process.env.AGENT_RECALL_WORKFLOW_REVIEW_REVISION = originalReviewRevision;
     if (originalScope === undefined) delete process.env.AGENT_RECALL_WORKFLOW_MCP_SCOPE;
     else process.env.AGENT_RECALL_WORKFLOW_MCP_SCOPE = originalScope;
+    if (originalMode === undefined) delete process.env.AGENT_RECALL_MCP_MODE;
+    else process.env.AGENT_RECALL_MCP_MODE = originalMode;
     vi.restoreAllMocks();
   });
 
@@ -53,6 +57,19 @@ describe("MCP server tools", () => {
       "workflow_outputs_list",
     ]);
     expect(tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
+  });
+
+  test("exposes only the seven progressive Gateway entry tools to external clients", () => {
+    process.env.AGENT_RECALL_MCP_MODE = "gateway";
+    expect(mcpToolDefinitions().map((tool) => tool.name)).toEqual([
+      "search_tools",
+      "get_tool",
+      "call_tool",
+      "list_skills",
+      "get_skill",
+      "search_sessions",
+      "get_session",
+    ]);
   });
 
   test("publishes Chinese descriptions for every Workflow MCP tool", () => {
@@ -87,7 +104,8 @@ describe("MCP server tools", () => {
     process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN = "managed-token";
     process.env.AGENT_RECALL_WORKFLOW_MCP_SCOPE = "planning";
 
-    expect(mcpToolDefinitions().map((tool) => tool.name)).toEqual(expect.arrayContaining([
+    const names = mcpToolDefinitions().map((tool) => tool.name);
+    expect(names).toEqual(expect.arrayContaining([
       "workflow_create",
       "workflow_confirm",
       "workflow_run",
@@ -95,6 +113,14 @@ describe("MCP server tools", () => {
       "workflow_intervention_resolve",
       "workflow_script_input_submit",
     ]));
+    for (const contextualTool of [
+      "workflow_node_complete",
+      "workflow_review_submit",
+      "workflow_review_gate_submit",
+      "studio_post",
+    ]) {
+      expect(names).not.toContain(contextualTool);
+    }
   });
 
   test("limits managed node sessions to node execution tools", () => {
@@ -249,6 +275,61 @@ describe("MCP server tools", () => {
 
     expect(response.result.tools.map((tool: { name: string }) => tool.name)).toContain("workflow_run_list");
     expect(response.result.tools.map((tool: { name: string }) => tool.name)).not.toContain("workflow_create");
+  });
+
+  test("propagates an indexed MCP tool error through the Gateway result", async () => {
+    const bridge = http.createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(`${JSON.stringify({
+        content: [{ type: "text", text: "upstream failed" }],
+        isError: true,
+      })}\n`);
+    });
+    await new Promise<void>((resolve, reject) => {
+      bridge.once("error", reject);
+      bridge.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = bridge.address();
+    if (!address || typeof address === "string") throw new Error("Test bridge did not bind to TCP.");
+    const dir = await mkdtemp(path.join(os.tmpdir(), "agent-recall-gateway-tool-error-"));
+    const discoveryPath = path.join(dir, "bridge.json");
+    await writeFile(discoveryPath, JSON.stringify({ host: "127.0.0.1", port: address.port, token: "secret" }), "utf8");
+    const tsxCli = path.resolve("node_modules", "tsx", "dist", "cli.mjs");
+    const serverPath = path.resolve("src", "mcp", "gateway-entry.ts");
+    const child = spawn(process.execPath, [tsxCli, serverPath], {
+      cwd: process.cwd(),
+      env: { ...process.env, AGENT_RECALL_MCP_BRIDGE: discoveryPath },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    try {
+      const response = await new Promise<Record<string, any>>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("Gateway stdio response timed out")), 5_000);
+        let output = "";
+        child.stdout.setEncoding("utf8");
+        child.stdout.on("data", (chunk: string) => {
+          output += chunk;
+          const newlineIndex = output.indexOf("\n");
+          if (newlineIndex < 0) return;
+          clearTimeout(timer);
+          resolve(JSON.parse(output.slice(0, newlineIndex)));
+        });
+        child.once("error", reject);
+        child.stdin.write(`${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "call_tool", arguments: { toolRef: "docs/write" } },
+        })}\n`);
+      });
+
+      expect(response.result).toMatchObject({
+        isError: true,
+        content: [{ type: "text", text: expect.stringContaining('"isError": true') }],
+      });
+    } finally {
+      child.kill();
+      await new Promise<void>((resolve, reject) => bridge.close((error) => error ? reject(error) : resolve()));
+    }
   });
 
   test("calls bridge endpoints with discovery token", async () => {

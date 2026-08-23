@@ -52,15 +52,10 @@ import type {
   WorkflowDefinition,
   WorkflowRun,
   WorkflowRunStreamEvent,
+  McpExternalClientConnections,
+  McpExternalClientUpdate,
   McpServerDefinition,
 } from "../automation/contracts";
-import type {
-  McpAgentDiagnostic,
-  McpInstallRequest,
-  McpInstallResult,
-  McpInstalledEntry,
-  McpSetupStatus,
-} from "../automation/engine/shared/mcp-config";
 import {
   AUTOMATION_CHANNELS,
   type AutomationChange,
@@ -97,11 +92,8 @@ export function createAutomationApi(ipc: AutomationIpcRenderer) {
     saveMcpServer: (server: McpServerDefinition): Promise<McpServerDefinition> => ipc.invoke(AUTOMATION_CHANNELS.mcpSave, server),
     testMcpServer: (server: McpServerDefinition): Promise<McpServerDefinition> => ipc.invoke(AUTOMATION_CHANNELS.mcpTest, server),
     deleteMcpServer: (serverId: string): Promise<boolean> => ipc.invoke(AUTOMATION_CHANNELS.mcpDelete, serverId),
-    getMcpSetupStatus: (): Promise<McpSetupStatus> => ipc.invoke(AUTOMATION_CHANNELS.mcpSetupStatus),
-    listInstalledMcps: (): Promise<McpInstalledEntry[]> => ipc.invoke(AUTOMATION_CHANNELS.mcpInstalledList),
-    listAgentMcps: (agentId: string): Promise<McpAgentDiagnostic[]> => ipc.invoke(AUTOMATION_CHANNELS.mcpAgentList, agentId),
-    installAgentMcp: (request: McpInstallRequest): Promise<McpInstallResult> => ipc.invoke(AUTOMATION_CHANNELS.mcpAgentInstall, request),
-    uninstallAgentMcp: (request: McpInstallRequest): Promise<McpInstallResult> => ipc.invoke(AUTOMATION_CHANNELS.mcpAgentUninstall, request),
+    getMcpClientConnections: (): Promise<McpExternalClientConnections> => ipc.invoke(AUTOMATION_CHANNELS.mcpClientConnections),
+    setMcpClientConnection: (request: McpExternalClientUpdate): Promise<McpExternalClientConnections> => ipc.invoke(AUTOMATION_CHANNELS.mcpClientSet, request),
 
     listEvaluationDatasets: (): Promise<EvaluationDataset[]> => ipc.invoke(AUTOMATION_CHANNELS.evaluationDatasetList),
     saveEvaluationDataset: (dataset: EvaluationDataset): Promise<EvaluationDataset> => ipc.invoke(AUTOMATION_CHANNELS.evaluationDatasetSave, dataset),

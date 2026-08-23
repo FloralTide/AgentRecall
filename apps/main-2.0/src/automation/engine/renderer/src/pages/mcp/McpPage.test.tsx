@@ -58,15 +58,21 @@ describe("McpPage", () => {
     ];
     model.draft = sessionSearch;
 
-    const html = renderToStaticMarkup(<McpPage language="zh" agents={[]} />);
+    const html = renderToStaticMarkup(<McpPage language="zh" />);
 
-    expect(html).toContain("项目内置");
+    expect(html).toContain("AgentRecall 内置");
+    expect(html).toContain("连接客户端");
+    expect(html).toContain("直接工具");
+    expect(html).toContain("list_skills · get_skill · search_sessions · get_session");
+    expect(html).toContain("渐进式索引");
+    expect(html).toContain("search_tools → get_tool → call_tool");
     expect(html).toContain("自定义");
     expect(html).toContain("AgentRecall 会话检索");
     expect(html).toContain("AgentRecall Skill 库");
     expect(html).toContain("AgentRecall Workflow");
     expect(html).toContain("检索已索引的 Agent 会话、查看上下文，并准备可恢复的迁移");
     expect(html).not.toContain("STDIO · agent-recall-session-search");
+    expect(html).not.toContain("Agent 绑定");
   });
 
   it("renders an enable switch on every server row, custom and built-in", () => {
@@ -76,7 +82,7 @@ describe("McpPage", () => {
     ];
     model.draft = model.servers[1];
 
-    const html = renderToStaticMarkup(<McpPage language="zh" agents={[]} />);
+    const html = renderToStaticMarkup(<McpPage language="zh" />);
 
     expect(html).toContain("mcp-registry-row");
     expect(html).toContain("mcp-registry-row-switch");
@@ -90,7 +96,7 @@ describe("McpPage", () => {
     model.servers = [teamDocs];
     model.draft = teamDocs;
 
-    const html = renderToStaticMarkup(<McpPage language="zh" agents={[]} />);
+    const html = renderToStaticMarkup(<McpPage language="zh" />);
 
     expect(html).toContain("mcp-registry-row is-disabled");
     // an unchecked checkbox must not carry the checked attribute
@@ -106,7 +112,7 @@ describe("McpPage", () => {
     model.servers = [workflow];
     model.draft = workflow;
 
-    const html = renderToStaticMarkup(<McpPage language="zh" agents={[]} />);
+    const html = renderToStaticMarkup(<McpPage language="zh" />);
 
     // managed servers still expose the original Power enable/disable button
     expect(html).toContain("禁用");

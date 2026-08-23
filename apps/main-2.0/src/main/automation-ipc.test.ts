@@ -34,6 +34,7 @@ function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefi
     sendWorkflowDraftReply: vi.fn(async (value) => ({ workflowDraft: value })),
     applyWorkflowReviewToManager: vi.fn(async (value) => ({ workflowDraft: value })),
     setMcpServers: vi.fn(),
+    flushPersistence: vi.fn(async () => undefined),
     listConfiguredAgents: vi.fn(() => [{
       id: "agent-1", name: "Agent", description: "", runtimeAgentId: "codex", channelId: "codex-openai",
       modelId: "default", tags: [], mcpBindings: [{ serverId: "docs", toolAllowlist: [] }], createdAt: 1, updatedAt: 1,
@@ -41,7 +42,7 @@ function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefi
   };
   const registry = {
     upsert: vi.fn(async (value) => value),
-    list: vi.fn(async () => []),
+    list: vi.fn(async (): Promise<McpServerDefinition[]> => []),
     recordTest: vi.fn(),
     delete: vi.fn(async () => true),
   };
@@ -60,20 +61,17 @@ function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefi
     deleteRun: vi.fn(async () => true),
     runExperiment: vi.fn(async (experimentId) => ({ experimentId })),
   };
-  const mcpAgents = {
-    status: vi.fn(async () => ({})),
-    listInstalled: vi.fn(async () => []),
-    listForAgent: vi.fn(async () => []),
-    install: vi.fn(async () => ({})),
-    uninstall: vi.fn(async () => ({})),
+  const mcpClients = {
+    snapshot: vi.fn(() => ({ clients: [] })),
+    setEnabled: vi.fn(() => ({ clients: [] })),
   };
   const discoverTools = vi.fn(async () => []);
   const mcp = new McpAutomationModule({
     registry: registry as never,
-    agents: mcpAgents as never,
     runtime: hub as never,
     builtins: (builtins ?? []) as never,
     discoverTools,
+    clients: mcpClients,
   });
   const service = {
     requirePrepared: vi.fn(async () => undefined),
@@ -133,6 +131,7 @@ function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefi
     evaluations,
     service,
     discoverTools,
+    mcpClients,
     send,
     dispose,
     unsubscribeWorkflowRunStream,
@@ -397,6 +396,28 @@ describe("registerAutomationIpc", () => {
     expect(hub.updateConfiguredAgents).toHaveBeenCalledWith([
       expect.objectContaining({ id: "agent-1", mcpBindings: [] }),
     ]);
+    expect(hub.flushPersistence).toHaveBeenCalledOnce();
+  });
+
+  it("updates an external MCP client connection through the main-process boundary", async () => {
+    const { invoke, mcpClients } = setup();
+
+    await expect(invoke(AUTOMATION_CHANNELS.mcpClientSet, {
+      clientId: "codex",
+      enabled: true,
+    })).resolves.toEqual({ clients: [] });
+
+    expect(mcpClients.setEnabled).toHaveBeenCalledWith({ clientId: "codex", enabled: true });
+  });
+
+  it("rejects malformed external MCP client requests", async () => {
+    const { invoke, mcpClients } = setup();
+
+    await expect(invoke(AUTOMATION_CHANNELS.mcpClientSet, {
+      clientId: "codebuddy",
+      enabled: "yes",
+    })).rejects.toThrow();
+    expect(mcpClients.setEnabled).not.toHaveBeenCalled();
   });
 
   it("bounds workflow planning input at the IPC boundary", async () => {

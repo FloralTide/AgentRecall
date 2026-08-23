@@ -1,27 +1,42 @@
 import { createRequire } from "node:module";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const require = createRequire(import.meta.url);
 const {
   applyClaudeConfig,
+  applyClaudeSettings,
   applyCodexConfig,
   applyDshConfig,
+  clientConnections,
   removeCodexBlock,
   removeDshBlock,
+  setClientEnabled,
 } = require(path.resolve("bin", "setup-mcp.cjs")) as {
-  applyClaudeConfig: (config: unknown, scriptPath: string, remove: boolean) => Record<string, unknown>;
-  applyCodexConfig: (toml: string, scriptPath: string, remove: boolean, command?: string) => string;
+  applyClaudeConfig: (config: unknown, scriptPath: string, remove: boolean, command?: string, bridgePath?: string) => Record<string, unknown>;
+  applyClaudeSettings: (settings: unknown, remove: boolean) => Record<string, unknown>;
+  applyCodexConfig: (toml: string, scriptPath: string, remove: boolean, command?: string, bridgePath?: string) => string;
   applyDshConfig: (yaml: string, scriptPath: string, remove: boolean, command?: string) => string;
+  clientConnections: (
+    preferences: { codex: boolean; claude: boolean },
+    home: string,
+  ) => { clients: Array<{ clientId: "codex" | "claude"; detected: boolean; configured: boolean; configPath: string }> };
   removeCodexBlock: (toml: string) => string;
   removeDshBlock: (yaml: string) => string;
+  setClientEnabled: (
+    clientId: "codex" | "claude",
+    enabled: boolean,
+    options: { homeDir: string },
+  ) => void;
 };
 
 describe("setup-mcp Claude config", () => {
   it("adds the server while preserving existing config", () => {
     const next = applyClaudeConfig({ projects: { a: 1 } }, "/abs/server.mjs", false);
     expect(next).toMatchObject({ projects: { a: 1 } });
-    expect(next.mcpServers).toEqual({ "agent-recall-v2": { command: "node", args: ["/abs/server.mjs"] } });
+    expect(next.mcpServers).toEqual({ "agent-recall": { command: "node", args: ["/abs/server.mjs"] } });
   });
 
   it("removes only our server", () => {
@@ -34,15 +49,37 @@ describe("setup-mcp Claude config", () => {
     const start = applyClaudeConfig({}, "/abs/server.mjs", false);
     expect(applyClaudeConfig(start, "/abs/server.mjs", true)).not.toHaveProperty("mcpServers");
   });
+
+  it("pins the Gateway to the current AgentRecall bridge", () => {
+    const next = applyClaudeConfig({}, "/abs/gateway.js", false, "node", "/data/automation-mcp-bridge.json");
+    expect(next.mcpServers).toEqual({
+      "agent-recall": {
+        command: "node",
+        args: ["/abs/gateway.js"],
+        env: { AGENT_RECALL_MCP_BRIDGE: "/data/automation-mcp-bridge.json" },
+      },
+    });
+  });
+
+  it("trusts only the AgentRecall Gateway tools in Claude Code settings", () => {
+    const next = applyClaudeSettings({ permissions: { allow: ["Bash(npm test)"] } }, false);
+    expect(next).toEqual({
+      permissions: { allow: ["Bash(npm test)", "mcp__agent-recall__*"] },
+    });
+    expect(applyClaudeSettings(next, true)).toEqual({
+      permissions: { allow: ["Bash(npm test)"] },
+    });
+  });
 });
 
 describe("setup-mcp Codex config", () => {
   it("appends the block and is idempotent", () => {
     const once = applyCodexConfig("[other]\nx = 1\n", "/abs/server.mjs", false);
-    expect(once).toContain("[mcp_servers.agent_recall_v2]");
+    expect(once).toContain("[mcp_servers.agent_recall]");
     expect(once).toContain('args = ["/abs/server.mjs"]');
+    expect(once).toContain('default_tools_approval_mode = "approve"');
     const twice = applyCodexConfig(once, "/abs/server.mjs", false);
-    expect(twice.match(/\[mcp_servers\.agent_recall_v2\]/g)).toHaveLength(1);
+    expect(twice.match(/\[mcp_servers\.agent_recall\]/g)).toHaveLength(1);
     expect(twice).toContain("[other]");
   });
 
@@ -58,6 +95,100 @@ describe("setup-mcp Codex config", () => {
     const toml = applyCodexConfig("", "C:\\Users\\me\\bin\\server.mjs", false, "C:\\Program Files\\nodejs\\node.exe");
     expect(toml).toContain('args = ["C:\\\\Users\\\\me\\\\bin\\\\server.mjs"]');
     expect(toml).toContain('command = "C:\\\\Program Files\\\\nodejs\\\\node.exe"');
+  });
+
+  it("replaces the legacy v2 entry with the single Gateway entry", () => {
+    const next = applyCodexConfig("[mcp_servers.agent_recall_v2]\ncommand = \"node\"\nargs = [\"old.mjs\"]\n", "/abs/gateway.js", false);
+    expect(next).not.toContain("agent_recall_v2");
+    expect(next).toContain("[mcp_servers.agent_recall]");
+    expect(next).toContain('args = ["/abs/gateway.js"]');
+  });
+
+  it("pins the Gateway to the current AgentRecall bridge", () => {
+    const next = applyCodexConfig("", "/abs/gateway.js", false, "node", "/data/automation-mcp-bridge.json");
+    expect(next).toContain('env = { AGENT_RECALL_MCP_BRIDGE = "/data/automation-mcp-bridge.json" }');
+  });
+});
+
+describe("setup-mcp client connections", () => {
+  it("detects common CLI install locations without requiring an existing config", () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), "agent-recall-client-detection-"));
+    const previous = {
+      testHome: process.env.AGENT_RECALL_TEST_HOME,
+      codexHome: process.env.CODEX_HOME,
+      claudeConfig: process.env.CLAUDE_CONFIG_DIR,
+      path: process.env.PATH,
+    };
+    try {
+      process.env.AGENT_RECALL_TEST_HOME = home;
+      delete process.env.CODEX_HOME;
+      delete process.env.CLAUDE_CONFIG_DIR;
+      process.env.PATH = "";
+      mkdirSync(path.join(home, ".local", "bin"), { recursive: true });
+      writeFileSync(path.join(home, ".local", "bin", "codex"), "", "utf8");
+
+      expect(clientConnections({ codex: true, claude: true }, home).clients)
+        .toEqual(expect.arrayContaining([
+          expect.objectContaining({ clientId: "codex", detected: true }),
+          expect.objectContaining({ clientId: "claude", detected: false }),
+        ]));
+    } finally {
+      restoreEnvironment("AGENT_RECALL_TEST_HOME", previous.testHome);
+      restoreEnvironment("CODEX_HOME", previous.codexHome);
+      restoreEnvironment("CLAUDE_CONFIG_DIR", previous.claudeConfig);
+      restoreEnvironment("PATH", previous.path);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("connects and disconnects Codex and Claude Code inside an isolated home", () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), "agent-recall-gateway-config-"));
+    const previous = {
+      testHome: process.env.AGENT_RECALL_TEST_HOME,
+      codexHome: process.env.CODEX_HOME,
+      claudeConfig: process.env.CLAUDE_CONFIG_DIR,
+      bridge: process.env.AGENT_RECALL_MCP_BRIDGE,
+      userData: process.env.AGENT_RECALL_USER_DATA_DIR,
+    };
+    try {
+      const codexHome = path.join(home, ".codex");
+      const claudeConfigDir = path.join(home, ".claude-config");
+      process.env.AGENT_RECALL_TEST_HOME = home;
+      process.env.CODEX_HOME = codexHome;
+      process.env.CLAUDE_CONFIG_DIR = claudeConfigDir;
+      process.env.AGENT_RECALL_USER_DATA_DIR = path.join(home, "user-data");
+      delete process.env.AGENT_RECALL_MCP_BRIDGE;
+      mkdirSync(codexHome, { recursive: true });
+      mkdirSync(claudeConfigDir, { recursive: true });
+
+      setClientEnabled("codex", true, { homeDir: home });
+      setClientEnabled("claude", true, { homeDir: home });
+
+      expect(clientConnections({ codex: true, claude: true }, home).clients)
+        .toEqual(expect.arrayContaining([
+          expect.objectContaining({ clientId: "codex", configured: true }),
+          expect.objectContaining({ clientId: "claude", configured: true }),
+        ]));
+      expect(readFileSync(path.join(codexHome, "config.toml"), "utf8"))
+        .toContain("AGENT_RECALL_MCP_BRIDGE");
+      expect(readFileSync(path.join(claudeConfigDir, ".claude.json"), "utf8"))
+        .toContain('"agent-recall"');
+      expect(readFileSync(path.join(claudeConfigDir, "settings.json"), "utf8"))
+        .toContain('"mcp__agent-recall__*"');
+
+      setClientEnabled("codex", false, { homeDir: home });
+      setClientEnabled("claude", false, { homeDir: home });
+      expect(clientConnections({ codex: false, claude: false }, home).clients.every((client) => !client.configured)).toBe(true);
+      expect(readFileSync(path.join(claudeConfigDir, "settings.json"), "utf8"))
+        .not.toContain("mcp__agent-recall__*");
+    } finally {
+      restoreEnvironment("AGENT_RECALL_TEST_HOME", previous.testHome);
+      restoreEnvironment("CODEX_HOME", previous.codexHome);
+      restoreEnvironment("CLAUDE_CONFIG_DIR", previous.claudeConfig);
+      restoreEnvironment("AGENT_RECALL_MCP_BRIDGE", previous.bridge);
+      restoreEnvironment("AGENT_RECALL_USER_DATA_DIR", previous.userData);
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
@@ -98,3 +229,8 @@ describe("setup-mcp DeepSeek Harness config", () => {
     expect(yaml).toContain('args: ["/path/with space/server.mjs"]');
   });
 });
+
+function restoreEnvironment(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}

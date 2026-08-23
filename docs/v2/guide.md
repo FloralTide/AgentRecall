@@ -42,14 +42,14 @@ agent-recall-v2 --update
 
 1. 如果只想搜索历史会话，打开 **Session**，点击 **更新索引**。Claude Code 和 Codex 默认启用。
 2. 如果还使用其他编码 Agent，在 **设置 → 可选来源** 中开启对应来源，再更新索引。
-3. 如果要使用 Chat、Workflow、Eval 或为 v2 Agent 绑定 MCP，先在 **Runtime** 中准备执行配置并创建 Agent。
+3. 如果要使用 Chat、Workflow 或 Eval，先在 **Runtime** 中准备执行配置并创建 Agent；如果要从 Codex 或 Claude Code 使用 AgentRecall 工具，直接打开 **MCP** 连接客户端。
 4. 如果要使用 AI 摘要或 AI 找会话，在 **Provider → AI 摘要与搜索** 中选择服务。
 
 应用启动后会常驻菜单栏或系统托盘。默认终端、全局快捷键、主题和语言都可以在设置中调整。
 
 ## 2. 准备 Runtime 和 Agent
 
-Chat、Workflow、Eval 和 v2 MCP 绑定都依赖 Runtime 中保存的 Agent。第一次使用这些功能前，先完成本节。
+Chat、Workflow 和 Eval 依赖 Runtime 中保存的 Agent。第一次使用这些功能前，先完成本节；MCP Gateway 与 Runtime Agent 无关。
 
 ### 理解三个概念
 
@@ -293,28 +293,28 @@ Eval 用固定输入重复运行 Agent，帮助比较输出质量和观察后续
 
 运行后可以查看平均分、最低分、通过率和耗时，也可以展开每个 Case 查看 Agent 输出、各评估器得分和失败原因。概览页会汇总近期实验、失败 Case 和整体通过率。
 
-## 8. 为 Agent 配置 MCP
+## 8. 通过 MCP Gateway 使用工具
 
-MCP 页面管理 v2 Agent 可以使用的工具服务。它与 **设置 → AI** 中供外部编码 Agent 搜索 AgentRecall 会话的 MCP 是两个不同入口。
+MCP 页面只有一个工具入口。AgentRecall 为 Codex 和 Claude Code 各维护一个名为 `agent-recall` 的 Gateway 配置，不再把工具服务绑定到 Runtime Agent。AgentRecall 需要保持运行，Gateway 才能访问页面中已启用的工具。
 
-### 注册 MCP Server
+点击页面右上角的 **连接客户端**，可以在弹窗中查看 Codex、Claude Code 的检测状态、配置文件路径，并单独连接或断开。连接即表示信任 AgentRecall Gateway：Codex 和 Claude Code 调用它开放的工具时不会重复请求批准；断开时会同时移除 Gateway 和这项信任。应用启动时会修复已启用且已检测到的客户端配置；手动断开后不会在下次启动时自动重连。修改连接后需重启对应客户端。
 
-进入 **MCP → Servers**，点击 **新建 MCP Server**：
+### 两层工具入口
 
-- **STDIO**：填写启动命令、参数和需要引用的环境变量。
-- **HTTP**：填写服务地址和连接配置。
+Gateway 对外固定开放七个工具：
 
-保存后测试连接。连接成功时，页面会显示该服务提供的工具列表。
+- `list_skills`、`get_skill`、`search_sessions`、`get_session` 是高频直接工具。
+- `search_tools` 返回紧凑、可分页的工具列表，也可以用 `sourceId` 只查看一个工具源；它不做语义匹配。
+- `get_tool` 根据稳定的 `toolRef` 返回完整说明和输入 Schema。
+- `call_tool` 根据同一个 `toolRef` 调用已启用的实际工具。
 
-### 绑定到 Agent
+四个直接工具和三个 Gateway 工具不会重复出现在通用索引中。依赖当前 Workflow Run、Review Revision 或 Studio 房间上下文的临时工具也不会进入全局索引，只在对应执行上下文中使用。
 
-进入 **Agent bindings**：
+### 管理工具源
 
-1. 选择一个已在 Runtime 中保存的 Agent。
-2. 开启它需要使用的 MCP Server。
-3. 创建新会话，让绑定生效。
+点击 **新建 MCP Server** 可以添加 STDIO 或 HTTP 工具源。保存新连接或修改连接配置时，AgentRecall 会自动读取并保存工具目录；也可以随时手动测试。刷新失败时保留上一次成功目录，同时显示本次错误。
 
-自定义 MCP Server 可以绑定到支持 MCP 的 Agent。托管服务目录目前只供 Codex Agent 使用，部分服务还需要选择允许访问的目录或提供对应 Token。API Agent 当前不支持 MCP。
+页面中的工具源开关和单个工具开关是 Gateway 的开放边界：关闭后配置仍保留，但外部客户端无法再通过索引或直接工具调用它。内置 Session、Skill 和 Workflow 工具源与自定义工具源都在同一页面管理。
 
 ## 9. 使用目录 Memory
 

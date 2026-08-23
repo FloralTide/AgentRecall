@@ -69,6 +69,37 @@ describe("MCP bridge", () => {
     });
   });
 
+  test("routes all Gateway operations through the external discovery token", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "agent-recall-mcp-gateway-"));
+    const gateway = {
+      searchTools: vi.fn(async () => ({ items: [{ toolRef: "docs/search" }] })),
+      getTool: vi.fn(async () => ({ toolRef: "docs/search", inputSchema: {} })),
+      callTool: vi.fn(async () => ({ ok: true, result: "done" })),
+      listSkills: vi.fn(async () => []),
+      getSkill: vi.fn(async () => ({ managedId: "skill-1" })),
+      searchSessions: vi.fn(async () => []),
+      getSession: vi.fn(async () => ({ sessionKey: "session-1" })),
+    };
+    bridge = await startMcpBridge(new AgentHub(), {
+      discoveryPath: path.join(dir, "bridge.json"),
+      gateway,
+    });
+
+    const search = await bridgeRequest("/mcp/gateway/tools/search", bridge.readToken, { sourceId: "docs" });
+    expect(await search.json()).toEqual({ items: [{ toolRef: "docs/search" }] });
+    expect(gateway.searchTools).toHaveBeenCalledWith({ sourceId: "docs" });
+
+    const call = await bridgeRequest("/mcp/gateway/tools/call", bridge.readToken, {
+      toolRef: "docs/search",
+      arguments: { query: "gateway" },
+    });
+    expect(await call.json()).toEqual({ ok: true, result: "done" });
+    expect(gateway.callTool).toHaveBeenCalledWith({
+      toolRef: "docs/search",
+      arguments: { query: "gateway" },
+    });
+  });
+
   test("routes a bound Review submission without exposing identity inside the result", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "agent-recall-mcp-review-submit-"));
     const submitWorkflowReview = vi.fn(() => ({ ok: true, accepted: true, workflowId: "wf-review", reviewedRevision: 2 }));

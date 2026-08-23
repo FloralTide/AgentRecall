@@ -7,4 +7,8 @@
  */
 export type * from "./engine/shared/types";
 export type { ResolveRuntimeApprovalRequest } from "./engine/shared/runtime-approval";
-export type { McpServerDefinition } from "./engine/shared/mcp/types";
+export type {
+  McpExternalClientConnections,
+  McpExternalClientUpdate,
+  McpServerDefinition,
+} from "./engine/shared/mcp/types";

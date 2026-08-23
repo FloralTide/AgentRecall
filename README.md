@@ -76,11 +76,11 @@ v2 在会话管理、远程同步和用量统计之外，增加了可复用 Agen
 ### 功能
 
 - **工作台和 Session**：查看用量、模型额度和最近活动，搜索、筛选并整理不同来源的会话；详情页支持会话内查找、Resume、迁移、导出、AI 摘要和远程恢复。
-- **Runtime 和 Agent**：为 Codex、Claude Code、API、Hermes、OpenCode、OpenClaw 或 DeepSeek Harness 准备执行配置，再保存可复用 Agent，供 Chat、Workflow 和 Eval 使用；支持 MCP 注入的 Runtime 还可绑定自定义 MCP Server。
+- **Runtime 和 Agent**：为 Codex、Claude Code、API、Hermes、OpenCode、OpenClaw 或 DeepSeek Harness 准备执行配置，再保存可复用 Agent，供 Chat、Workflow 和 Eval 使用。
 - **多 Agent Chat**：创建共享项目目录的工作室，让多名员工保留独立上下文；通过 `@名称` 或接收者列表指定一个或多个 Agent 响应。
 - **Workflow**：描述任务并回答规划 Agent 的追问，生成、Review 和确认流程图后运行 Agent 或脚本节点；运行期间可以处理追问、审批、产物和异常恢复。
 - **Eval**：支持 skill 维度的 Eval 驱动优化闭环，用户可以自定义 good cases，支持 Case + LLM Judge 回归评测，逐 Case 评分和跨版本对⽐。
-- **MCP**：注册并测试 STDIO 或 HTTP MCP Server，查看工具列表，再把需要的服务绑定到指定 Agent 的新会话。
+- **MCP**：为 Codex 和 Claude Code 连接一个 AgentRecall Gateway；常用的 Skill、Session 工具直接开放，其余 STDIO 或 HTTP MCP 工具通过渐进式索引按需查看和调用。
 - **目录 Memory**：为主动选择的项目目录建立彼此隔离的长期记忆，只增量捕获开启后的新对话，维护手动记忆，并为 Codex、Claude Code 或 OpenCode 开启自动召回；历史会话继续通过 Session 搜索按需复用。
 - **Skills 和 Provider**：查看本机 Skill 或从公共仓库发现 Skill，加入 Skill 库后安装到 Codex、Claude Code 等编码 Agent；Provider 页面单独管理本机 Codex、Claude Code 和会话 AI 功能使用的服务。
 
@@ -100,7 +100,7 @@ agent-recall-v2
 
 启动后应用会常驻菜单栏或系统托盘，并自动准备本地数据服务，不需要另外安装 PostgreSQL。macOS 上执行 `agent-recall-v2 install-app` 可以生成本地 `agent-recall-v2.app`，之后直接从 Launchpad / Spotlight / Dock 打开。更新执行 `agent-recall-v2 --update` 即可，App 内也可以在 **设置 → 关于** 检查更新。
 
-v2 的命令、应用数据、数据库、MCP 标识和更新缓存都与 v1 分开，当前不会读取或导入 v1 数据。两者可以同时安装并运行。完整的安装、更新、回滚和卸载说明见 [Install.md](./Install.md)。
+v2 的命令、应用数据、数据库和更新缓存都与 v1 分开，当前不会读取或导入 v1 数据。两者可以同时安装并运行。连接 MCP 客户端时，v2 Gateway 使用统一的 `agent-recall` 入口。完整的安装、更新、回滚和卸载说明见 [Install.md](./Install.md)。
 
 > 更详细的使用说明请查看 [AgentRecall v2 Guide](./docs/v2/guide.md)。
 

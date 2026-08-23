@@ -644,8 +644,8 @@ export function WorkbenchPage({
                 `${enabledMcpCount}/${mcpServers.length} 个服务已启用`,
               )}
             description={l(
-              "Keep project tools and their Agent bindings in one place.",
-              "集中管理项目工具以及它们与 Agent 的绑定关系。",
+              "Manage AgentRecall Gateway sources and their exposed tools in one place.",
+              "集中管理 AgentRecall Gateway 的工具源和开放工具。",
             )}
             rows={(mcpServers ?? []).slice(0, 3).map((server) => ({
               id: server.id,

@@ -4,7 +4,6 @@ import type { AppSnapshot } from "../../automation/contracts";
 import type { AgentHub, AgentHubChange } from "../../automation/engine/main/hub/agent-hub";
 import type { AutomationChange, WorkflowAutomationProjection } from "../../shared/ipc/automation";
 import type { McpRegistryStore } from "../../automation/engine/main/mcp-registry-store";
-import type { McpAgentManagementService } from "../../automation/engine/main/mcp/agent-management-service";
 import type { StartMcpBridgeOptions } from "../../automation/engine/main/bridges/mcp-bridge";
 import type { EvaluationService } from "./evaluation-service";
 import type { TeamChatService } from "../team-chat/team-chat-service";
@@ -35,7 +34,7 @@ function snapshot(workDir = "/repo"): AppSnapshot {
   };
 }
 
-function fixture(injectAgents = true, optionOverrides: Partial<AutomationServiceOptions> = {}) {
+function fixture(optionOverrides: Partial<AutomationServiceOptions> = {}) {
   const calls: string[] = [];
   let current = snapshot();
   let listener: ((value: AgentHubChange) => void) | undefined;
@@ -83,7 +82,6 @@ function fixture(injectAgents = true, optionOverrides: Partial<AutomationService
     configuredAgentReferences: vi.fn(async () => []),
     handleMcpRequest: vi.fn(async () => ({ ok: true })),
   } as unknown as TeamChatService;
-  const agents = {} as McpAgentManagementService;
   const database = {
     query: vi.fn(async () => ({ rows: [] })),
   } as unknown as PostgresDatabase;
@@ -117,7 +115,6 @@ function fixture(injectAgents = true, optionOverrides: Partial<AutomationService
         initialize: vi.fn(async () => undefined),
         ensureDefinitions: vi.fn(async () => undefined),
       } as never,
-      ...(injectAgents ? { agents } : {}),
       loadBundledWorkflows: vi.fn(async () => [{
         workflowId: "wf",
         title: "One",
@@ -171,7 +168,7 @@ describe("NativeAutomationService", () => {
       readRuntime: () => undefined,
       writeRuntime: () => undefined,
     });
-    const { service } = fixture(true, { builtinSkills: skillBuiltin });
+    const { service } = fixture({ builtinSkills: skillBuiltin });
 
     expect((await service.mcp.list()).map((server) => server.id)).toEqual([
       "agent-recall-skills",
@@ -221,21 +218,6 @@ describe("NativeAutomationService", () => {
     expect(service.health()).toEqual({ state: "idle" });
   });
 
-  it("reports planning write tools without reading child-only environment variables", async () => {
-    const previous = process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN;
-    delete process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN;
-    try {
-      const { service } = fixture(false);
-      await service.initialize();
-      expect(service.mcp.setupStatus()).toMatchObject({
-        bridgeRunning: true,
-        workflowCreateAvailable: true,
-      });
-    } finally {
-      if (previous === undefined) delete process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN;
-      else process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN = previous;
-    }
-  });
   it("keeps the managed MCP write token inside the native runtime", async () => {
     const { service, hub } = fixture();
 
@@ -244,12 +226,18 @@ describe("NativeAutomationService", () => {
     expect(hub.setWorkflowMcpManagedToken).toHaveBeenCalledWith("test-token");
   });
 
-  it("discovers the built-in Workflow catalog without the managed write token", async () => {
-    const { service } = fixture(true, {
+  it("configures the built-in Workflow source with the Gateway planning scope", async () => {
+    const { service } = fixture({
       workflowMcp: {
         isEnabled: () => true,
         setEnabled: async (next) => next,
-        readRuntime: () => undefined,
+        readRuntime: () => ({
+          tools: [{ name: "workflow_create", inputSchema: {} }],
+          disabledTools: [],
+          status: "connected",
+          createdAt: 1,
+          updatedAt: 1,
+        }),
         writeRuntime: () => undefined,
       },
     });
@@ -263,7 +251,37 @@ describe("NativeAutomationService", () => {
 
     expect(workflowBuiltin?.testEnv()).toEqual({
       AGENT_RECALL_WORKFLOW_MCP_BRIDGE: "/user-data/automation-mcp-bridge.json",
+      AGENT_RECALL_WORKFLOW_MCP_TOKEN: "test-token",
+      AGENT_RECALL_WORKFLOW_MCP_SCOPE: "planning",
     });
+  });
+
+  it("refreshes an old standalone Workflow catalog before exposing the Gateway", async () => {
+    const { service } = fixture({
+      workflowMcp: {
+        isEnabled: () => true,
+        setEnabled: async (next) => next,
+        readRuntime: () => ({
+          tools: [{ name: "workflow_list", inputSchema: {} }],
+          disabledTools: [],
+          status: "connected",
+          createdAt: 1,
+          updatedAt: 1,
+        }),
+        writeRuntime: () => undefined,
+      },
+    });
+    const refresh = vi.spyOn(service.mcp, "test").mockImplementation(async (server) => ({
+      ...server,
+      tools: [...server.tools, { name: "workflow_create", inputSchema: {} }],
+    }));
+
+    await service.initialize();
+
+    expect(refresh).toHaveBeenCalledWith(expect.objectContaining({
+      id: "agent-recall-workflow",
+      tools: [{ name: "workflow_list", inputSchema: {} }],
+    }));
   });
 
   it("initializes the native engine once in dependency order", async () => {

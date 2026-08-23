@@ -98,6 +98,7 @@ import {
 } from "../core/remote-sync";
 import { REMOTE_PROCESS_EXEC_OPTIONS, runRemoteCommand, runRemoteCommandWithInput } from "../core/remote-process";
 import { loadWslSessionDetailPayload } from "../core/remote-session-loader";
+import { getMcpSkill, listMcpSkills } from "../mcp/skill-entry";
 import { restoreRemotePortableSession, type RemoteSessionRestoreDependencies } from "../core/remote-session-restore";
 import { RemoteEnvironmentLifecycle } from "../core/remote-environment-lifecycle";
 import { RemoteWatchManager } from "../core/remote-watch";
@@ -292,6 +293,8 @@ const MCP_SETUP_PATH = path.join(__dirname, "../../bin/setup-mcp.cjs");
 interface McpSetup {
   run(remove: boolean): string[];
   status(): boolean;
+  clientConnections(preferences: { codex: boolean; claude: boolean }, home?: string): import("../automation/contracts").McpExternalClientConnections;
+  setClientEnabled(clientId: "codex" | "claude", enabled: boolean, options?: { homeDir?: string }): void;
   serverDefinition(): { id: string; name: string; command: string; args: string[]; transport: string; env: Record<string, string>; createdAt: number; updatedAt: number };
 }
 function loadMcpSetup(): McpSetup {
@@ -306,12 +309,23 @@ function loadUpdateClient(): AppUpdateClient {
   return requireCjs(UPDATE_CLIENT_PATH) as AppUpdateClient;
 }
 
-function ensureAgentRecallMcpPreference(): boolean {
+function mcpClientPreferences(): { codex: boolean; claude: boolean } {
+  return mcpClientPreferenceStore.store;
+}
+
+function mcpClientConnections(): import("../automation/contracts").McpExternalClientConnections {
+  return loadMcpSetup().clientConnections(mcpClientPreferences(), app.getPath("home"));
+}
+
+function ensureAgentRecallMcpClients(): import("../automation/contracts").McpExternalClientConnections {
   const setup = loadMcpSetup();
-  if (getSettings().sessionSearchMcpEnabled) {
-    if (!setup.status()) setup.run(false);
+  const preferences = mcpClientPreferences();
+  for (const client of setup.clientConnections(preferences, app.getPath("home")).clients) {
+    if (client.detected && client.enabled) {
+      setup.setClientEnabled(client.clientId, true, { homeDir: app.getPath("home") });
+    }
   }
-  return setup.status();
+  return setup.clientConnections(preferences, app.getPath("home"));
 }
 
 if (process.env.AGENT_RECALL_USE_MOCK_KEYCHAIN === "1") {
@@ -362,6 +376,11 @@ let quotaService: QuotaService;
 
 const settingsStore = new Store<AppSettings>({
   defaults: defaultSettings,
+});
+
+const mcpClientPreferenceStore = new Store<{ codex: boolean; claude: boolean }>({
+  name: "mcp-client-preferences",
+  defaults: { codex: true, claude: true },
 });
 
 // Runtime state (discovered tools, per-tool toggles, last test result) for the
@@ -506,7 +525,76 @@ function createAutomationService(): NativeAutomationService {
     homePath: app.getPath("home"),
     appDataPath: app.getPath("appData"),
     bundledWorkflowsPath: bundledAutomationWorkflowsPath(),
-    workflowMcpServerPath: path.join(app.getAppPath(), "out", "mcp", "workflow-entry.js"),
+    workflowMcpServerPath: path.join(__dirname, "..", "mcp", "workflow-entry.js"),
+    mcpClients: {
+      snapshot: () => mcpClientConnections(),
+      setEnabled: (request) => {
+        loadMcpSetup().setClientEnabled(request.clientId, request.enabled, { homeDir: app.getPath("home") });
+        mcpClientPreferenceStore.set(request.clientId, request.enabled);
+        return mcpClientConnections();
+      },
+    },
+    gatewayDirect: {
+      listSkills: async () => listMcpSkills({
+        libraryRoot: skillLibraryRoot,
+        homeDir: app.getPath("home"),
+        codexHome: process.env.CODEX_HOME,
+      }),
+      getSkill: async (value) => {
+        const record = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+        const managedId = typeof record.managedId === "string" ? record.managedId.trim() : "";
+        if (!managedId) throw new Error("managedId is required.");
+        const skill = getMcpSkill(managedId, {
+          libraryRoot: skillLibraryRoot,
+          homeDir: app.getPath("home"),
+          codexHome: process.env.CODEX_HOME,
+        });
+        if (!skill) throw new Error(`Skill was not found: ${managedId}`);
+        return skill;
+      },
+      searchSessions: async (value) => {
+        const record = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+        const query = typeof record.query === "string" ? record.query : "";
+        const source = typeof record.source === "string" && record.source ? record.source : undefined;
+        const projectPath = typeof record.project === "string" && record.project ? record.project : undefined;
+        const limit = typeof record.limit === "number" ? Math.max(1, Math.min(50, Math.floor(record.limit))) : 20;
+        const sessions = await store.searchSessions(visibleSearchOptions({
+          query,
+          source: source as SearchOptions["source"],
+          projectPath,
+          limit,
+        }));
+        return sessions.map((session) => ({
+          sessionKey: session.sessionKey,
+          title: session.displayTitle,
+          source: session.source,
+          project: session.projectPath,
+          timestamp: session.timestamp,
+          summary: session.aiSummary ?? session.firstQuestion ?? null,
+        }));
+      },
+      getSession: async (value) => {
+        const record = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+        const sessionKey = typeof record.sessionKey === "string" ? record.sessionKey.trim() : "";
+        if (!sessionKey) throw new Error("sessionKey is required.");
+        await remoteSessionAccess.ensureDetails(sessionKey);
+        const session = await store.getSession(sessionKey);
+        if (!session) throw new Error(`Session was not found: ${sessionKey}`);
+        const maxMessages = typeof record.maxMessages === "number" ? Math.max(1, Math.min(200, Math.floor(record.maxMessages))) : 40;
+        const offset = typeof record.offset === "number" && record.offset > 0 ? Math.floor(record.offset) : 0;
+        const messages = await store.getMessages(sessionKey, offset, maxMessages);
+        return {
+          sessionKey: session.sessionKey,
+          title: session.displayTitle,
+          source: session.source,
+          project: session.projectPath,
+          timestamp: session.timestamp,
+          summary: session.aiSummary,
+          totalMessages: session.messageCount,
+          messages: messages.map((message) => ({ role: message.role, content: message.content })),
+        };
+      },
+    },
     confirmWorkflowScriptPermissions: async ({ nodeTitle, permissions }) => {
       const result = mainWindow ? await dialog.showMessageBox(mainWindow, {
         type: "warning",
@@ -528,12 +616,10 @@ function createAutomationService(): NativeAutomationService {
       return result.response === 1;
     },
     builtinSessionSearch: new BuiltinSessionSearchServer({
-      isEnabled: () => ensureAgentRecallMcpPreference(),
+      isEnabled: () => getSettings().sessionSearchMcpEnabled,
       setEnabled: async (next) => {
-        const setup = loadMcpSetup();
-        setup.run(!next);
         settingsStore.set("sessionSearchMcpEnabled", next);
-        return setup.status();
+        return next;
       },
       launchConfig: () => {
         const definition = loadMcpSetup().serverDefinition();
@@ -545,6 +631,12 @@ function createAutomationService(): NativeAutomationService {
           args: definition.args,
         };
       },
+      testEnv: () => ({
+        ...(postgresRuntime ? { AGENT_RECALL_DATABASE_URL: postgresRuntime.connectionUrl } : {}),
+        ...(openVikingHookManifestService
+          ? { AGENT_RECALL_OPENVIKING_MANIFEST: openVikingHookManifestService.manifestPath() }
+          : {}),
+      }),
       readRuntime: () => mcpRuntimeStore.store,
       writeRuntime: (runtime) => {
         mcpRuntimeStore.store = runtime;
@@ -561,8 +653,9 @@ function createAutomationService(): NativeAutomationService {
         name: "AgentRecall Skills",
         description: "列出 AgentRecall 已管理的 Skill，并按需读取完整说明。",
         command: "node",
-        args: [path.join(app.getAppPath(), "bin", "agent-recall-skill-mcp.mjs")],
+        args: [path.join(__dirname, "..", "..", "bin", "agent-recall-skill-mcp.mjs")],
       }),
+      testEnv: () => ({ AGENT_RECALL_SKILL_LIBRARY: skillLibraryRoot }),
       readRuntime: () => skillMcpRuntimeStore.store,
       writeRuntime: (runtime) => {
         skillMcpRuntimeStore.store = runtime;
@@ -1191,7 +1284,7 @@ async function refreshOpenVikingHookManifest(): Promise<void> {
     workspaces: await store.listOpenVikingWorkspaces(),
     recallTokenBudget: getSettings().openVikingRecallTokenBudget,
   });
-  writeOpenVikingManifestPointer(manifestPath);
+  writeOpenVikingManifestPointer(manifestPath, app.getPath("home"));
 }
 
 function reconcileOpenVikingMemoryHooks(settings: AppSettings): void {
@@ -2586,30 +2679,6 @@ function registerIpc(): void {
       .filter((session): session is SessionSearchResult => session !== null);
     return { reply, sessions };
   });
-  ipcMain.handle("mcp:status", () => {
-    try {
-      return ensureAgentRecallMcpPreference();
-    } catch {
-      return false;
-    }
-  });
-  ipcMain.handle("mcp:set-enabled", (_event, enabled: boolean) => {
-    const setup = loadMcpSetup();
-    setup.run(!enabled);
-    settingsStore.set("sessionSearchMcpEnabled", enabled);
-    return setup.status();
-  });
-  ipcMain.handle("mcp-workflow:status", () => getSettings().workflowMcpEnabled);
-  ipcMain.handle("mcp-workflow:set-enabled", async (_event, enabled: boolean) => {
-    if (automationService) {
-      // setWorkflowEnabled flips the settings flag AND bulk-registers codex
-      // agents through the built-in workflow server's toggle.
-      await automationService.mcp.setWorkflowEnabled(enabled).catch(() => undefined);
-    } else {
-      settingsStore.set("workflowMcpEnabled", enabled);
-    }
-    return getSettings().workflowMcpEnabled;
-  });
   ipcMain.handle("ssh-config:list-hosts", () => readUserSshConfig());
   ipcMain.handle("wsl:list-distributions", () => listWslDistributions());
   ipcMain.handle("environment:save", (_event, input: EnvironmentUpsertInput) =>
@@ -2773,19 +2842,19 @@ app.whenReady().then(async () => {
   }
   // Publish the live endpoint so standalone MCP clients use the same store.
   try {
-    writeDatabaseUrlPointer(postgresRuntime.connectionUrl);
+    writeDatabaseUrlPointer(postgresRuntime.connectionUrl, app.getPath("home"));
   } catch {
     // Non-fatal: the MCP server can still use AGENT_RECALL_DATABASE_URL.
   }
   try {
-    writeSkillLibraryPointer(skillLibraryRoot);
+    writeSkillLibraryPointer(skillLibraryRoot, app.getPath("home"));
   } catch {
     // Non-fatal: the MCP server can still use AGENT_RECALL_SKILL_LIBRARY.
   }
   try {
-    ensureAgentRecallMcpPreference();
+    ensureAgentRecallMcpClients();
   } catch (error) {
-    console.error(`Failed to configure session search MCP: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`Failed to configure AgentRecall Gateway MCP: ${error instanceof Error ? error.message : String(error)}`);
   }
   await providerService.migrateLegacyKeys();
   await pruneDisabledOptionalSources(getSettings());

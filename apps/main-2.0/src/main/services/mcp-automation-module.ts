@@ -1,30 +1,45 @@
 import type { AppSnapshot, ConfiguredAgent, McpServerDefinition } from "../../automation/contracts";
 import type { ManagedMcp } from "../../automation/engine/main/mcp-builtin-server";
-import { discoverMcpTools } from "../../automation/engine/main/mcp-client";
-import type { McpAgentManagementService } from "../../automation/engine/main/mcp/agent-management-service";
+import { discoverMcpTools, invokeMcpTool } from "../../automation/engine/main/mcp-client";
 import type { McpRegistryStore } from "../../automation/engine/main/mcp-registry-store";
-import type { McpInstallRequest } from "../../automation/engine/shared/mcp-config";
-import type { McpToolDefinition } from "../../automation/engine/shared/mcp/types";
+import type {
+  McpExternalClientConnections,
+  McpExternalClientUpdate,
+  McpGatewayCallRequest,
+  McpGatewayGetRequest,
+  McpGatewaySearchRequest,
+  McpGatewaySearchResult,
+  McpGatewayToolDetail,
+  McpServerDefinition as SharedMcpServerDefinition,
+  McpToolDefinition,
+} from "../../automation/engine/shared/mcp/types";
 
 interface McpRuntimeState {
   listConfiguredAgents(): ConfiguredAgent[];
   setMcpServers(servers: McpServerDefinition[]): void;
   updateConfiguredAgents(agents: ConfiguredAgent[]): AppSnapshot;
+  flushPersistence(): Promise<void>;
 }
 
 interface McpAutomationModuleDependencies {
   registry: Pick<McpRegistryStore, "list" | "upsert" | "recordTest" | "delete">;
-  agents: Pick<McpAgentManagementService, "status" | "listInstalled" | "listForAgent" | "install" | "uninstall">;
   runtime: McpRuntimeState;
   builtins?: ManagedMcp[];
   discoverTools?: typeof discoverMcpTools;
+  invokeTool?: typeof invokeMcpTool;
+  clients?: {
+    snapshot(): McpExternalClientConnections;
+    setEnabled(request: McpExternalClientUpdate): McpExternalClientConnections;
+  };
 }
 
 export class McpAutomationModule {
   private readonly discoverTools: typeof discoverMcpTools;
+  private readonly invokeTool: typeof invokeMcpTool;
 
   constructor(private readonly dependencies: McpAutomationModuleDependencies) {
     this.discoverTools = dependencies.discoverTools ?? discoverMcpTools;
+    this.invokeTool = dependencies.invokeTool ?? invokeMcpTool;
   }
 
   list(): Promise<McpServerDefinition[]> {
@@ -50,9 +65,22 @@ export class McpAutomationModule {
       await this.publishRegistry();
       return saved;
     }
+    const existing = (await this.dependencies.registry.list()).find((item) => item.id === server.id);
     const saved = await this.dependencies.registry.upsert(server);
+    let result = saved;
+    if (!existing || connectionSignature(existing) !== connectionSignature(saved)) {
+      try {
+        result = await this.dependencies.registry.recordTest(saved, await this.discoverTools(saved));
+      } catch (error) {
+        result = await this.dependencies.registry.recordTest(
+          saved,
+          existing?.tools ?? saved.tools,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
     await this.publishRegistry();
-    return saved;
+    return result;
   }
 
   async test(server: McpServerDefinition): Promise<McpServerDefinition> {
@@ -69,7 +97,7 @@ export class McpAutomationModule {
       await this.publishRegistry();
       return tested;
     } catch (error) {
-      const tested = await record([], error instanceof Error ? error.message : String(error));
+      const tested = await record(target.tools, error instanceof Error ? error.message : String(error));
       await this.publishRegistry();
       return tested;
     }
@@ -94,27 +122,68 @@ export class McpAutomationModule {
         : {}),
     }));
     this.dependencies.runtime.updateConfiguredAgents(agents);
+    await this.dependencies.runtime.flushPersistence();
     return true;
   }
 
-  setupStatus(): ReturnType<McpAgentManagementService["status"]> {
-    return this.dependencies.agents.status();
+  clientConnections(): McpExternalClientConnections {
+    return this.dependencies.clients?.snapshot() ?? { clients: [] };
   }
 
-  listInstalled(): ReturnType<McpAgentManagementService["listInstalled"]> {
-    return this.dependencies.agents.listInstalled();
+  setClientConnection(request: McpExternalClientUpdate): McpExternalClientConnections {
+    if (!this.dependencies.clients) throw new Error("MCP client connection management is unavailable.");
+    return this.dependencies.clients.setEnabled(request);
   }
 
-  listForAgent(agentId: string): ReturnType<McpAgentManagementService["listForAgent"]> {
-    return this.dependencies.agents.listForAgent(agentId);
+  async searchGatewayTools(request: McpGatewaySearchRequest): Promise<McpGatewaySearchResult> {
+    const entries = await this.gatewayEntries();
+    const filtered = request.sourceId
+      ? entries.filter((entry) => entry.server.id === request.sourceId)
+      : entries;
+    const offset = parseCursor(request.cursor);
+    const limit = Math.max(1, Math.min(50, Math.floor(request.limit ?? 20)));
+    const page = filtered.slice(offset, offset + limit);
+    return {
+      items: page.map(({ server, tool }) => ({
+        toolRef: toolRefFor(server.id, tool.name),
+        sourceId: server.id,
+        sourceName: server.name,
+        name: tool.name,
+        ...(tool.description ? { description: tool.description } : {}),
+      })),
+      ...(offset + page.length < filtered.length ? { nextCursor: String(offset + page.length) } : {}),
+    };
   }
 
-  install(request: McpInstallRequest): ReturnType<McpAgentManagementService["install"]> {
-    return this.dependencies.agents.install(request);
+  async getGatewayTool(request: McpGatewayGetRequest): Promise<McpGatewayToolDetail> {
+    const entry = (await this.gatewayEntries()).find(
+      ({ server, tool }) => toolRefFor(server.id, tool.name) === request.toolRef,
+    );
+    if (!entry) throw new Error(`MCP tool is unavailable or disabled: ${request.toolRef}`);
+    return {
+      toolRef: request.toolRef,
+      sourceId: entry.server.id,
+      sourceName: entry.server.name,
+      name: entry.tool.name,
+      ...(entry.tool.description ? { description: entry.tool.description } : {}),
+      inputSchema: entry.tool.inputSchema,
+    };
   }
 
-  uninstall(request: McpInstallRequest): ReturnType<McpAgentManagementService["uninstall"]> {
-    return this.dependencies.agents.uninstall(request);
+  async callGatewayTool(request: McpGatewayCallRequest): Promise<unknown> {
+    const entry = (await this.gatewayEntries()).find(
+      ({ server, tool }) => toolRefFor(server.id, tool.name) === request.toolRef,
+    );
+    if (!entry) throw new Error(`MCP tool is unavailable or disabled: ${request.toolRef}`);
+    const builtin = this.matchingBuiltin(entry.server.id);
+    return this.invokeTool(entry.server, entry.tool.name, request.arguments ?? {}, builtin?.testEnv());
+  }
+
+  async assertGatewayDirectToolEnabled(sourceId: string, toolName: string): Promise<void> {
+    const source = (await this.listWithBuiltin()).find((server) => server.id === sourceId);
+    if (!source?.enabled || source.disabledTools?.includes(toolName)) {
+      throw new Error(`MCP tool is unavailable or disabled: ${toolRefFor(sourceId, toolName)}`);
+    }
   }
 
   /**
@@ -138,4 +207,46 @@ export class McpAutomationModule {
   private async publishRegistry(): Promise<void> {
     this.dependencies.runtime.setMcpServers(await this.listWithBuiltin());
   }
+
+  private async gatewayEntries(): Promise<Array<{ server: SharedMcpServerDefinition; tool: McpToolDefinition }>> {
+    const servers = await this.listWithBuiltin();
+    return servers.flatMap((server) => {
+      if (!server.enabled) return [];
+      const disabled = new Set(server.disabledTools ?? []);
+      return server.tools
+        .filter((tool) => !disabled.has(tool.name) && !isDirectGatewayTool(server.id, tool.name))
+        .map((tool) => ({ server, tool }));
+    });
+  }
+}
+
+function isDirectGatewayTool(serverId: string, toolName: string): boolean {
+  return (serverId === "agent-recall-session-search" && (toolName === "search_sessions" || toolName === "get_session"))
+    || (serverId === "agent-recall-skills" && (toolName === "list_skills" || toolName === "get_skill"));
+}
+
+function toolRefFor(serverId: string, toolName: string): string {
+  return `${encodeURIComponent(serverId)}/${encodeURIComponent(toolName)}`;
+}
+
+function parseCursor(cursor: string | undefined): number {
+  if (!cursor) return 0;
+  const value = Number(cursor);
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error("MCP tool cursor is invalid.");
+  return value;
+}
+
+function connectionSignature(server: McpServerDefinition): string {
+  return JSON.stringify({
+    transport: server.transport,
+    command: server.command ?? "",
+    args: server.args,
+    url: server.url ?? "",
+    env: sortedRecord(server.env),
+    headers: sortedRecord(server.headers ?? {}),
+  });
+}
+
+function sortedRecord(record: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(record).sort(([left], [right]) => left.localeCompare(right)));
 }

@@ -5,15 +5,11 @@ import { AutomationPageState } from "./automation-page-state";
 import { useAutomationDetails } from "./automation-provider";
 
 export function McpFeaturePage({ language }: { language: LanguageMode }): ReactElement {
-  const { api, snapshot, setSnapshot, loading, error, refresh } = useAutomationDetails();
+  const { loading, error, refresh } = useAutomationDetails();
   return (
     <div className="automation-page automation-mcp-page" data-page="mcp">
       <AutomationPageState loading={loading} error={error} language={language} onRetry={() => void refresh()}>
-        <McpPage
-          language={language}
-          agents={snapshot.configuredAgents}
-          onSaveAgents={async (agents) => { setSnapshot(await api.saveConfiguredAgents(agents)); }}
-        />
+        <McpPage language={language} />
       </AutomationPageState>
     </div>
   );
