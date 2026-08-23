@@ -18,6 +18,7 @@ import {
   getSafeMigrationResumeCommand,
   getResumeCommand,
   getResumeProcessSpec,
+  getRemoteMigrationCliVersionCommand,
   inspectMigrationCli,
   mergeProcessEnvOverrides,
   mergeAppSettings,
@@ -1157,6 +1158,12 @@ describe("migration cli process specs", () => {
     await expect(
       inspectMigrationCli("codebuddy", defaultSettings, async () => "version banana"),
     ).rejects.toThrow("CodeBuddy CLI returned an unparseable version");
+  });
+
+  it("loads NVM before probing a migration CLI over SSH", () => {
+    expect(getRemoteMigrationCliVersionCommand("codex", ["--version"])).toBe(
+      'bash -lc \'if [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; fi; codex --version\'',
+    );
   });
 
   it("does not echo potentially sensitive unparseable version output", async () => {

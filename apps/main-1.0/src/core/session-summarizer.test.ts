@@ -316,6 +316,54 @@ describe("summarizeSession", () => {
     }
   });
 
+  it("uses the endpoint transport for direct HTTP summaries", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error("global fetch should not be used");
+    }) as typeof fetch;
+    const calls: string[] = [];
+    try {
+      const result = await summarizeSession(
+        { head: [{ role: "user", content: "summarize through the app network stack" }], tail: [], omittedCount: 0 },
+        {
+          baseUrl: "https://api.example/v1",
+          model: "model",
+          apiKey: "secret",
+          apiFormat: "openai_chat",
+          fetch: async (input) => {
+            calls.push(String(input));
+            return new Response(JSON.stringify({
+              choices: [{ message: { content: '{"summary":"Used app networking.","title":"Network","tags":["summary"]}' } }],
+            }), { status: 200, headers: { "Content-Type": "application/json" } });
+          },
+        },
+        requestSummaryCompletion,
+      );
+
+      expect(result.summary).toBe("Used app networking.");
+      expect(calls).toEqual(["https://api.example/v1/chat/completions"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("reports the endpoint and network cause when a direct summary cannot connect", async () => {
+    const cause = Object.assign(new Error("getaddrinfo ENOTFOUND api.example"), { code: "ENOTFOUND" });
+    await expect(summarizeSession(
+      { head: [{ role: "user", content: "summarize a network failure" }], tail: [], omittedCount: 0 },
+      {
+        baseUrl: "https://api.example/v1",
+        model: "model",
+        apiKey: "secret",
+        apiFormat: "openai_chat",
+        fetch: async () => { throw Object.assign(new TypeError("fetch failed"), { cause }); },
+      },
+      requestSummaryCompletion,
+    )).rejects.toThrow(
+      /could not reach https:\/\/api\.example\/v1\/chat\/completions.*host name could not be resolved.*ENOTFOUND/,
+    );
+  });
+
   it("retries without temperature when the model rejects it (HTTP 400 deprecated)", async () => {
     const originalFetch = globalThis.fetch;
     const bodies: Array<Record<string, unknown>> = [];

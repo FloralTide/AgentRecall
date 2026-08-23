@@ -79,19 +79,26 @@ export function sessionSourceDeletionPaths(
   };
 }
 
-export function deleteLocalSessionSources(targets: readonly SessionSourceDeleteTarget[]): void {
+export function deleteLocalSessionSources(
+  targets: readonly SessionSourceDeleteTarget[],
+  options: { requireCodexStateCleanup?: boolean } = {},
+): void {
   const deletionPaths = sessionSourceDeletionPaths(targets);
   validateDeletionPaths(deletionPaths);
+  if (options.requireCodexStateCleanup) deleteCodexAppStateRows(targets, true);
   for (const filePath of deletionPaths.files) deleteRegularFile(filePath);
   for (const directoryPath of deletionPaths.directories) deleteOwnedDirectory(directoryPath);
   for (const directoryPath of deletionPaths.emptyDirectories) removeEmptyDirectory(directoryPath);
-  deleteCodexAppStateRows(targets);
+  if (!options.requireCodexStateCleanup) deleteCodexAppStateRows(targets, false);
 }
 
-function deleteCodexAppStateRows(targets: readonly SessionSourceDeleteTarget[]): void {
+function deleteCodexAppStateRows(
+  targets: readonly SessionSourceDeleteTarget[],
+  required: boolean,
+): void {
   const idsByCodexHome = new Map<string, Set<string>>();
   for (const target of targets) {
-    if (target.source !== "codex-app" || !target.rawId) continue;
+    if ((target.source !== "codex-app" && target.source !== "codex-cli") || !target.rawId) continue;
     const codexHome = codexHomeForRollout(target.filePath);
     if (!codexHome) continue;
     const ids = idsByCodexHome.get(codexHome) ?? new Set<string>();
@@ -102,9 +109,8 @@ function deleteCodexAppStateRows(targets: readonly SessionSourceDeleteTarget[]):
   for (const [codexHome, ids] of idsByCodexHome) {
     const familyIds = new Set(ids);
     let databasePaths: string[] = [];
-    try {
-      databasePaths = listCodexStateDatabases(codexHome);
-    } catch {
+    try { databasePaths = listCodexStateDatabases(codexHome); } catch (error) {
+      if (required) throw error;
       // Codex state is auxiliary; an unavailable home must not block deletion.
     }
     for (const databasePath of databasePaths) {
@@ -113,15 +119,15 @@ function deleteCodexAppStateRows(targets: readonly SessionSourceDeleteTarget[]):
         database = openCodexStateDatabase(databasePath);
         if (!database) continue;
         for (const id of deleteCodexThreadRows(database, [...familyIds])) familyIds.add(id);
-      } catch {
+      } catch (error) {
+        if (required) throw error;
         // Codex may hold a write lock while the app is running. State cleanup is best-effort.
       } finally {
         try { database?.close(); } catch { /* preserve the best-effort boundary */ }
       }
     }
-    try {
-      deleteCodexSessionIndexRows(codexHome, [...familyIds]);
-    } catch {
+    try { deleteCodexSessionIndexRows(codexHome, [...familyIds]); } catch (error) {
+      if (required) throw error;
       // A stale native index must never turn a successful source deletion into a failure.
     }
   }

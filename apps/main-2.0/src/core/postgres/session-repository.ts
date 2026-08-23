@@ -1,6 +1,7 @@
 import type {
   CodexIncrementalState,
   IndexedSession,
+  IndexedSessionFileState,
   ProjectQueryOptions,
   ProjectSummary,
   ProjectTagEntry,
@@ -12,6 +13,7 @@ import type {
   TagListOptions,
   TokenUsageEvent,
 } from "../types";
+import { TURN_DERIVATION_VERSION } from "../turns/derive-turns";
 import type { SessionBulkDeleteTarget } from "../session-bulk-delete";
 import { SESSION_SOURCE_DESCRIPTORS, sessionSourceDescriptor } from "../session-sources";
 import {
@@ -1093,19 +1095,42 @@ export class PostgresSessionRepository {
       started_at: Date | string;
       file_mtime_ms: number | string;
       file_size: number | string;
+      content_indexed_mtime_ms: number | string;
+      content_indexed_size: number | string;
+      turn_derivation_current: boolean;
       pr_url: string | null;
       pr_number: number | string | null;
       is_subagent: boolean;
       parent_session_id: string | null;
     }>(
       `
-        select raw_id, source, environment_id, project_path, file_path,
-          original_title, first_question, started_at, file_mtime_ms, file_size,
-          pr_url, pr_number, is_subagent, parent_session_id
-        from agent_recall.sessions
-        where session_key = $1
+        select
+          sessions.raw_id,
+          sessions.source,
+          sessions.environment_id,
+          sessions.project_path,
+          sessions.file_path,
+          sessions.original_title,
+          sessions.first_question,
+          sessions.started_at,
+          sessions.file_mtime_ms,
+          sessions.file_size,
+          sessions.content_indexed_mtime_ms,
+          sessions.content_indexed_size,
+          not exists (
+            select 1
+            from agent_recall.session_turns turns
+            where turns.session_key = sessions.session_key
+              and turns.derivation_version < $2
+          ) as turn_derivation_current,
+          sessions.pr_url,
+          sessions.pr_number,
+          sessions.is_subagent,
+          sessions.parent_session_id
+        from agent_recall.sessions sessions
+        where sessions.session_key = $1
       `,
-      [session.sessionKey],
+      [session.sessionKey, TURN_DERIVATION_VERSION],
     );
     const row = result.rows[0];
     return Boolean(
@@ -1120,6 +1145,9 @@ export class PostgresSessionRepository {
       && timeValue(row.started_at) === session.timestamp
       && Math.abs(numberValue(row.file_mtime_ms) - session.fileMtimeMs) < 0.001
       && numberValue(row.file_size) === session.fileSize
+      && Math.abs(numberValue(row.content_indexed_mtime_ms) - session.fileMtimeMs) < 0.001
+      && numberValue(row.content_indexed_size) === session.fileSize
+      && Boolean(row.turn_derivation_current)
       && (row.pr_url ?? null) === (session.prUrl ?? null)
       && (row.pr_number === null ? null : numberValue(row.pr_number)) === (session.prNumber ?? null)
       && Boolean(row.is_subagent) === Boolean(session.isSubagent)
@@ -1176,22 +1204,39 @@ export class PostgresSessionRepository {
 
   async listIndexedSessionFiles(
     environmentId = "local",
-  ): Promise<Array<{ sessionKey: string; source: SessionSource; filePath: string; fileMtimeMs: number; fileSize: number; indexedAt: number }>> {
+  ): Promise<IndexedSessionFileState[]> {
     const result = await this.database.query<{
       session_key: string;
       source: SessionSource;
       file_path: string;
       file_mtime_ms: number | string;
       file_size: number | string;
+      content_indexed_mtime_ms: number | string;
+      content_indexed_size: number | string;
+      turn_derivation_current: boolean;
       indexed_at: Date | string;
     }>(
       `
-        select session_key, source, file_path, file_mtime_ms, file_size, indexed_at
-        from agent_recall.sessions
-        where environment_id = $1 and file_path <> ''
-        order by file_path
+        select
+          sessions.session_key,
+          sessions.source,
+          sessions.file_path,
+          sessions.file_mtime_ms,
+          sessions.file_size,
+          sessions.content_indexed_mtime_ms,
+          sessions.content_indexed_size,
+          not exists (
+            select 1
+            from agent_recall.session_turns turns
+            where turns.session_key = sessions.session_key
+              and turns.derivation_version < $2
+          ) as turn_derivation_current,
+          sessions.indexed_at
+        from agent_recall.sessions sessions
+        where sessions.environment_id = $1 and sessions.file_path <> ''
+        order by sessions.file_path
       `,
-      [environmentId],
+      [environmentId, TURN_DERIVATION_VERSION],
     );
     return result.rows.map((row) => ({
       sessionKey: row.session_key,
@@ -1199,6 +1244,9 @@ export class PostgresSessionRepository {
       filePath: row.file_path,
       fileMtimeMs: numberValue(row.file_mtime_ms),
       fileSize: numberValue(row.file_size),
+      contentIndexedMtimeMs: numberValue(row.content_indexed_mtime_ms),
+      contentIndexedSize: numberValue(row.content_indexed_size),
+      turnDerivationCurrent: Boolean(row.turn_derivation_current),
       indexedAt: timeValue(row.indexed_at),
     }));
   }

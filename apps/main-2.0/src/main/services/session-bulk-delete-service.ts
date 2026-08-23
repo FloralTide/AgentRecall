@@ -317,6 +317,14 @@ async function deleteTargetFamily(
 ): Promise<void> {
   const cascadeRoot = targets.find((target) => target.sessionKey === target.cascadeRootSessionKey);
   if (!cascadeRoot) throw new Error("Session deletion family is missing its cascade root.");
+  if (targets.every(isLocalNativeCodexTarget)) {
+    try {
+      deleteLocalSessionSources(targets, { requireCodexStateCleanup: true });
+    } catch {
+      throw new Error("Codex conversation state could not be updated. Close Codex App completely and try deleting it again.");
+    }
+    return;
+  }
   const staleCodexAppTargets = targets.filter((target) =>
     target.source === "codex-app"
     && !target.sourceAvailable
@@ -344,6 +352,14 @@ async function deleteTargetFamily(
     return;
   }
   deleteLocalSessionSources(availableTargets);
+}
+
+function isLocalNativeCodexTarget(target: SessionBulkDeleteTarget): boolean {
+  if (
+    target.environmentKind !== "local"
+    || (target.source !== "codex-app" && target.source !== "codex-cli")
+  ) return false;
+  return /(^|[\\/])\.codex[\\/]sessions[\\/]/iu.test(target.filePath);
 }
 
 function dedupeAcceptedFamilies(families: SessionBulkDeleteTarget[][]): SessionBulkDeleteTarget[] {

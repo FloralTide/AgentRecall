@@ -7,6 +7,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  net,
   safeStorage,
   screen,
   shell,
@@ -48,6 +49,7 @@ import {
   getMigrationResumeProcessSpec,
   getSafeMigrationResumeCommand,
   getResumeCommand,
+  getRemoteMigrationCliVersionCommand,
   inspectMigrationCli,
   mergeAppSettings,
   normalizeTerminal,
@@ -67,7 +69,7 @@ import { focusLiveSessionTerminal, setLiveSessionTerminalTitle } from "../core/s
 import { setSessionCustomTitleAndSyncTerminal } from "../core/session-title-sync";
 import { createCachedLiveSessionSnapshotLoader } from "../core/session-activity";
 import { loadRemoteLiveSessions } from "../core/remote-session-activity";
-import { summarizeSession, type SummaryEndpoint } from "../core/session-summarizer";
+import { summarizeSession, type SummaryEndpoint, type SummaryFetch } from "../core/session-summarizer";
 import {
   buildCodexExecEndpoint as buildCodexExecEndpointShared,
   resolveSummaryEndpointFromSettings as resolveSummaryEndpointFromSettingsShared,
@@ -1379,6 +1381,8 @@ let summaryBackfillRunning = false;
 const SUMMARY_PROVIDER_ERROR =
   "AI summary has no usable provider. Select Codex, Claude Code, or configure a direct summary API provider in Settings.";
 
+const electronSummaryFetch: SummaryFetch = (input, init) => net.fetch(input, init);
+
 function buildCodexExecEndpoint(settings: AppSettings): SummaryEndpoint {
   return buildCodexExecEndpointShared(settings, {
     onTemporarySession: (sessionKey) => {
@@ -1407,7 +1411,7 @@ async function resolveSummaryEndpointFromSettings(): Promise<SummaryEndpoint | n
       summaryApiConfigMode: "custom",
       summaryApiConfig,
     }, {});
-    if (endpoint) return endpoint;
+    if (endpoint) return { ...endpoint, fetch: electronSummaryFetch };
     return buildCodexExecEndpointShared(settings, { onTemporarySession });
   }
   return resolveSummaryEndpointFromSettingsShared(settings, { onTemporarySession });
@@ -1559,7 +1563,7 @@ async function inspectSshMigrationCli(environment: SessionEnvironment, target: M
     { ...settings, claudeBinary: "claude", codexBinary: "codex" },
     (command, args) => runSshSessionCommand(
       environment,
-      [command, ...args].map(quotePosixToken).join(" "),
+      getRemoteMigrationCliVersionCommand(command, args),
     ),
     { platform: "linux" },
   );

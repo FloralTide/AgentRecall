@@ -54,7 +54,15 @@ describe("main process startup wiring", () => {
     expect(source).toContain('{ allowSsh: session.environmentKind === "ssh" }');
     expect(source).toContain("createSourceRemoteRestoreDependencies(environment, progress)");
     expect(source).toContain('environment.kind === "ssh" ? inspectSshMigrationCli(environment, target)');
+    expect(source).toContain("getRemoteMigrationCliVersionCommand(command, args)");
     expect(source).toContain('const sshArgs = buildRemoteSyncSshArgs(environment, "").slice(0, -1)');
     expect(source).toContain("await openResumeInTerminal(session, getSettings(), { sshArgs })");
+  });
+
+  it("uses Electron networking for direct summary providers", () => {
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("fetch: electronSummaryFetch");
+    expect(source).toContain("net.fetch(input, init)");
   });
 });

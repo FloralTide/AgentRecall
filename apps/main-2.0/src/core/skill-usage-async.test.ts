@@ -161,6 +161,83 @@ describe("asynchronous skill usage refresh", () => {
     }
   });
 
+  it("counts Codex Desktop wrapped exec commands through the structured tool-call layer", async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v2-wrapped-codex-skill-usage-"));
+    try {
+      const sessionPath = path.join(homeDir, ".codex", "sessions", "2026", "08", "rollout.jsonl");
+      const skillPath = "/tmp/.codex/skills/wrapped-review/SKILL.md";
+      writeJsonl(sessionPath, [{
+        type: "response_item",
+        timestamp: "2026-08-04T00:00:00.000Z",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "exec-1",
+          input: `const r = await tools.exec_command({"cmd":"cat ${skillPath}"}); text(r.output)`,
+        },
+      }]);
+
+      const sources = await listSkillUsageSourcesAsync({ homeDir, codexSessionsDir: path.dirname(sessionPath) });
+      const source = sources.find((item) => item.path === sessionPath);
+      await expect(readSkillUsageSourceEventsAsync(source!)).resolves.toEqual([
+        expect.objectContaining({ agent: "codex", skill: "wrapped-review" }),
+      ]);
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("discovers StepCode usage and honors each record's agent and outcome", async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v2-stepcode-skill-usage-"));
+    try {
+      const sessionPath = path.join(homeDir, ".stepcode", "sessions", "usage.jsonl");
+      writeJsonl(sessionPath, [
+        {
+          type: "tool.call",
+          agent: "claude",
+          ts: "2026-08-04T00:00:01.000Z",
+          toolName: "Read",
+          data: { input: { path: "/tmp/.claude/skills/stepcode-claude/SKILL.md" } },
+        },
+        {
+          type: "tool.call",
+          agent: "codex",
+          ts: "2026-08-04T00:00:02.000Z",
+          toolName: "read_file",
+          data: { input: { path: "/tmp/.codex/skills/stepcode-codex/SKILL.md" } },
+        },
+        {
+          type: "tool.call",
+          agent: "codex",
+          ts: "2026-08-04T00:00:03.000Z",
+          toolName: "read_file",
+          data: { isError: true, input: { path: "/tmp/.codex/skills/ignored/SKILL.md" } },
+        },
+      ]);
+
+      const disabled = await listSkillUsageSourcesAsync({ homeDir, codexSessionsDir: null, includeStepcode: false });
+      expect(disabled).not.toEqual(expect.arrayContaining([expect.objectContaining({ path: sessionPath })]));
+
+      const sources = await listSkillUsageSourcesAsync({ homeDir, codexSessionsDir: null, includeStepcode: true });
+      const source = sources.find((item) => item.path === sessionPath);
+      const events = await readSkillUsageSourceEventsAsync(source!);
+      expect(events).toEqual([
+        expect.objectContaining({
+          agent: "claude",
+          skill: "stepcode-claude",
+          timestamp: Date.parse("2026-08-04T00:00:01.000Z"),
+        }),
+        expect.objectContaining({
+          agent: "codex",
+          skill: "stepcode-codex",
+          timestamp: Date.parse("2026-08-04T00:00:02.000Z"),
+        }),
+      ]);
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it("gates WorkBuddy usage and scans only root and subagent session layouts", async () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v2-workbuddy-skill-usage-"));
     try {

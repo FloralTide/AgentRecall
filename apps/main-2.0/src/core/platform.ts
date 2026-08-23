@@ -104,8 +104,6 @@ export interface AppSettings {
   includePi: boolean;
   includeKimiCli: boolean;
   includeDeepSeekCli: boolean;
-  rulesSyncEnabled: boolean;
-  memoriesSyncEnabled: boolean;
   evalEnabled: boolean;
   openVikingMemoryEnabled: boolean;
   openVikingClaudeEnabled: boolean;
@@ -200,8 +198,6 @@ export const defaultSettings: AppSettings = {
   includePi: false,
   includeKimiCli: false,
   includeDeepSeekCli: false,
-  rulesSyncEnabled: false,
-  memoriesSyncEnabled: false,
   evalEnabled: false,
   openVikingMemoryEnabled: false,
   openVikingClaudeEnabled: false,
@@ -1511,6 +1507,12 @@ function migrationCliVersionErrorMessage(target: MigrationTarget, binary: string
   const err = error as NodeJS.ErrnoException;
   if (err.code === "ENOENT") return `${prefix} binary not found: ${binary}`;
   return `${prefix} --version failed for ${binary}.`;
+}
+
+export function getRemoteMigrationCliVersionCommand(command: string, args: string[]): string {
+  const invocation = buildShellCommand(command, args, null, { shell: "posix", withCwd: false });
+  const script = `if [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; fi; ${invocation}`;
+  return `bash -lc ${shellQuote(script)}`;
 }
 
 export async function inspectMigrationCli(

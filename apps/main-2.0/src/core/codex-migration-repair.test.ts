@@ -80,6 +80,48 @@ describe("repairLegacyAgentRecallCodexRollouts", () => {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }
   });
+
+  it("renames only AgentRecall rollouts that use the legacy millisecond filename", async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-migration-filename-repair-"));
+    try {
+      const legacyPath = writeLegacyRollout(
+        homeDir,
+        ".codex",
+        `rollout-2026-08-10T06-22-27-123Z-${SESSION_ID}`,
+        "agent-recall",
+        true,
+        "current",
+      );
+      const canonicalPath = path.join(
+        path.dirname(legacyPath),
+        `rollout-2026-08-10T06-22-27-${SESSION_ID}.jsonl`,
+      );
+      const nativePath = writeLegacyRollout(
+        homeDir,
+        ".codex",
+        `rollout-2026-08-10T06-22-28-123Z-${SESSION_ID}`,
+        "codex",
+        true,
+        "current",
+      );
+
+      await expect(repairLegacyAgentRecallCodexRollouts(homeDir)).resolves.toEqual({
+        scannedFiles: 2,
+        repairedFiles: 1,
+        repairedItemIds: 0,
+        failedFiles: 0,
+      });
+      expect(fs.existsSync(legacyPath)).toBe(false);
+      expect(fs.existsSync(canonicalPath)).toBe(true);
+      expect(fs.existsSync(nativePath)).toBe(true);
+      await expect(repairLegacyAgentRecallCodexRollouts(homeDir)).resolves.toMatchObject({
+        repairedFiles: 0,
+        repairedItemIds: 0,
+      });
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
 });
 
 function writeLegacyRollout(

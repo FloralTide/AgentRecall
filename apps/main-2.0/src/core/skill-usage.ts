@@ -24,6 +24,7 @@ export type SkillUsageSourceKind =
   | "claude-hook"
   | "claude-session"
   | "codex-session"
+  | "stepcode-session"
   | "codebuddy-session"
   | "workbuddy-session"
   | "cursor-session"
@@ -39,6 +40,8 @@ export type SkillUsageProvider =
   | "codex"
   | "tclaude"
   | "tcodex"
+  | "stepcode-claude"
+  | "stepcode-codex"
   | "codebuddy"
   | "workbuddy"
   | "cursor"
@@ -102,6 +105,7 @@ export interface SkillUsageOptions {
   codexSessionsDir?: string | null;
   includeTclaude?: boolean;
   includeTcodex?: boolean;
+  includeStepcode?: boolean;
   includeCodeBuddyCli?: boolean;
   includeWorkBuddy?: boolean;
   includeCodeWizCli?: boolean;
@@ -184,6 +188,11 @@ export function listSkillUsageSources(options: SkillUsageOptions = {}): SkillUsa
   if (options.includeTcodex !== false) {
     addJsonlSources(sources, path.join(homeDir, ".tcodex", "sessions"), "codex", "tcodex", "codex-session");
   }
+  if (options.includeStepcode) {
+    addJsonlSources(sources, path.join(homeDir, ".stepcode", "sessions"), "claude", "stepcode-claude", "stepcode-session");
+    addJsonlSources(sources, path.join(homeDir, ".stepcode", "codex", "sessions"), "codex", "stepcode-codex", "stepcode-session");
+    addJsonlSources(sources, path.join(homeDir, ".stepcode", "codex", "archived_sessions"), "codex", "stepcode-codex", "stepcode-session");
+  }
   if (options.includeCodeBuddyCli !== false) {
     addJsonlSources(sources, path.join(homeDir, ".codebuddy", "projects"), "codex", "codebuddy", "codebuddy-session");
   }
@@ -246,6 +255,11 @@ export async function listSkillUsageSourcesAsync(options: SkillUsageOptions = {}
   }
   if (options.includeTcodex !== false) {
     await addJsonlSourcesAsync(sources, path.join(homeDir, ".tcodex", "sessions"), "codex", "tcodex", "codex-session");
+  }
+  if (options.includeStepcode) {
+    await addJsonlSourcesAsync(sources, path.join(homeDir, ".stepcode", "sessions"), "claude", "stepcode-claude", "stepcode-session");
+    await addJsonlSourcesAsync(sources, path.join(homeDir, ".stepcode", "codex", "sessions"), "codex", "stepcode-codex", "stepcode-session");
+    await addJsonlSourcesAsync(sources, path.join(homeDir, ".stepcode", "codex", "archived_sessions"), "codex", "stepcode-codex", "stepcode-session");
   }
   if (options.includeCodeBuddyCli !== false) {
     await addJsonlSourcesAsync(sources, path.join(homeDir, ".codebuddy", "projects"), "codex", "codebuddy", "codebuddy-session");
@@ -522,7 +536,7 @@ function codexSessionUsageEvents(
     ? "codex"
     : undefined;
   return extractCodexStructuredToolCalls(rows).flatMap((call) => usageEventsFromToolCall(
-    { name: call.canonicalName, input: call.input },
+    { name: call.canonicalName, input: unwrapCodexExecInput(call.input) },
     Math.min(...call.evidence.map((item) => item.timestamp)),
     defaultOwner,
   ).map((event) => ({
@@ -558,27 +572,37 @@ function parseSessionUsageRecord(
 ): ScannedUsageEvent[] {
   if (!isRecord(parsed)) return [];
 
-  const timestamp = timestampFrom(parsed.timestamp ?? parsed.createdAt ?? parsed.created_at);
+  const timestamp = timestampFrom(parsed.timestamp ?? parsed.createdAt ?? parsed.created_at ?? parsed.ts);
   if (source.kind === "codex-session") return [];
   collectFailedToolUseIds(parsed, context);
-  const calls = source.kind === "codebuddy-session"
+  const calls = source.kind === "stepcode-session"
+    ? stepCodeToolCalls(parsed)
+    : source.kind === "codebuddy-session"
       ? codeBuddyToolCalls(parsed)
       : source.kind === "workbuddy-session"
         ? workBuddyToolCalls(parsed)
         : source.kind === "openclaw-session"
           ? openClawToolCalls(parsed)
           : assistantToolCalls(parsed);
-  const defaultOwner = source.provider === "claude" || source.provider === "tclaude"
+  const defaultOwner = source.provider === "claude" || source.provider === "tclaude" || source.provider === "stepcode-claude"
     ? "claude"
-    : source.provider === "codex" || source.provider === "tcodex"
+    : source.provider === "codex" || source.provider === "tcodex" || source.provider === "stepcode-codex"
       ? "codex"
       : source.provider === "qoder"
         ? "qoder"
         : undefined;
+  // StepCode logs both Claude and Codex turns in one file and tags each record
+  // with its own agent, so trust that over the source-level default.
+  let owner: SkillUsageAgent | undefined = defaultOwner;
+  if (source.kind === "stepcode-session") {
+    const recordAgent = optionalText(parsed.agent);
+    if (recordAgent === "codex") owner = "codex";
+    else if (recordAgent === "claude") owner = "claude";
+  }
   const sessionId = optionalText(parsed.sessionId ?? parsed.session_id) || context.sessionId;
   const cwd = optionalText(parsed.cwd) || context.cwd;
 
-  return calls.flatMap((call) => usageEventsFromToolCall(call, timestamp, defaultOwner).map((event) => ({
+  return calls.flatMap((call) => usageEventsFromToolCall(call, timestamp, owner).map((event) => ({
     ...event,
     ...(sessionId ? { sessionId } : {}),
     ...(cwd ? { cwd } : {}),
@@ -647,6 +671,22 @@ function collectFailedToolUseIds(row: Record<string, unknown>, context: SessionF
   }
 }
 
+// Codex Desktop's `exec` custom tool wraps the real shell command in a JS
+// snippet: `const r = await tools.exec_command({"cmd":"cat …/SKILL.md", …}); text(r.output)`.
+// Pull the exec_command argument object out so shell/skill detection sees the
+// actual command instead of the JS wrapper (whose trailing `; text(r.output)`
+// makes the read-only check reject it).
+function unwrapCodexExecInput(input: unknown): unknown {
+  if (typeof input !== "string" || !input.includes("exec_command(")) return input;
+  const match = input.match(/exec_command\(\s*(\{[\s\S]*\})\s*\)/);
+  if (!match) return input;
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    return input;
+  }
+}
+
 function codeBuddyToolCalls(row: Record<string, unknown>): StructuredToolCall[] {
   if (row.type === "function_call" && typeof row.name === "string") {
     return [{ name: row.name, input: row.input ?? row.arguments }];
@@ -678,6 +718,18 @@ function openClawToolCalls(row: Record<string, unknown>): StructuredToolCall[] {
   const name = typeof data.name === "string" ? data.name : typeof data.tool_name === "string" ? data.tool_name : null;
   if (!name) return [];
   return [{ name, input: data.input ?? data.arguments ?? data }];
+}
+
+// StepCode logs each tool invocation as a flat `tool.call` record with the tool
+// name in `toolName` and the arguments plus outcome under `data`. A call that
+// reported an error was never exercised, so it must not count as usage.
+function stepCodeToolCalls(row: Record<string, unknown>): StructuredToolCall[] {
+  if (row.type !== "tool.call") return [];
+  const data = recordField(row, "data");
+  if (data?.isError === true) return [];
+  const name = typeof row.toolName === "string" ? row.toolName : "";
+  if (!name) return [];
+  return [{ name, input: data ? data.input : undefined }];
 }
 
 function usageEventsFromToolCall(

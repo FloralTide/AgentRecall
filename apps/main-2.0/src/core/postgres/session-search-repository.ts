@@ -323,10 +323,12 @@ export class PostgresSessionSearchRepository {
   ): Promise<void> {
     if (sessions.length === 0) return;
     const values: unknown[] = [sessions.map((session) => session.sessionKey)];
-    const predicates = clauses.map((clause) => {
+    const patterns = clauses.map((clause) => {
       values.push(`%${escapeLike(clause)}%`);
-      return `messages.content ilike $${values.length} escape '\\'`;
+      return `$${values.length}`;
     });
+    const messagePredicates = patterns.map((pattern) => `messages.content ilike ${pattern} escape '\\'`);
+    const turnPredicates = patterns.map((pattern) => `turns.search_text ilike ${pattern} escape '\\'`);
     const result = await this.database.query<{
       session_key: string;
       turn_id: string;
@@ -349,7 +351,8 @@ export class PostgresSessionSearchRepository {
         join agent_recall.session_turns turns on turns.id = messages.turn_id
         where turns.session_key = any($1::text[])
           and messages.role in ('user', 'assistant')
-          and (${predicates.join(" or ")})
+          and ${turnPredicates.join(" and ")}
+          and (${messagePredicates.join(" or ")})
         order by turns.session_key, turns.turn_index, messages.message_index
       `,
       values,
