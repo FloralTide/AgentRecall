@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
+import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
 import {
   SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
@@ -11,6 +13,9 @@ import {
 import type { SessionStore } from "../../core/session-store";
 import type { SessionEnvironment, SessionSource } from "../../core/types";
 import { SessionBulkDeleteService } from "./session-bulk-delete-service";
+
+const require = createRequire(import.meta.url);
+const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: typeof DatabaseSyncType };
 
 function target(sessionKey: string, overrides: Partial<SessionBulkDeleteTarget> = {}): SessionBulkDeleteTarget {
   return {
@@ -146,6 +151,43 @@ describe("SessionBulkDeleteService", () => {
       failed: [],
     });
     expect(store.deleteSessionRecords).toHaveBeenCalledWith(["parent", "child"], false);
+  });
+
+  it("keeps a restored Codex rollout retryable when native state cleanup fails", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-restored-codex-delete-"));
+    const codexHome = path.join(root, ".codex");
+    const rolloutPath = path.join(codexHome, "sessions", "2026", "08", "23", "rollout-restored.jsonl");
+    const sessionId = "850e8400-e29b-41d4-a716-446655440003";
+    fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
+    fs.writeFileSync(rolloutPath, "fixture", "utf8");
+    const database = new DatabaseSync(path.join(codexHome, "state_1.sqlite"));
+    database.exec(`
+      CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL);
+      CREATE TRIGGER block_thread_delete BEFORE DELETE ON threads
+      BEGIN SELECT RAISE(ABORT, 'state cleanup blocked'); END;
+    `);
+    database.prepare("INSERT INTO threads (id, rollout_path) VALUES (?, ?)").run(sessionId, rolloutPath);
+    database.close();
+    const store = createStore([target("codex:restored", {
+      rawId: sessionId, source: "codex-cli", filePath: rolloutPath, sourceAvailable: true,
+    })]);
+
+    try {
+      const result = await new SessionBulkDeleteService(store).delete({
+        sessionKeys: ["codex:restored"], liveSessionKeys: [],
+      });
+      expect(result).toMatchObject({
+        deletedSessionKeys: [],
+        failed: [{
+          reason: "delete-failed",
+          message: "Codex conversation state could not be updated. Close Codex App completely and try deleting it again.",
+        }],
+      });
+      expect(fs.existsSync(rolloutPath)).toBe(true);
+      expect(store.deleteSessionRecords).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("marks a related family even when both parent and child were explicitly selected", () => {
