@@ -14,7 +14,14 @@ import {
 } from "lucide-react";
 import type { SessionSortBy } from "../../../core/types";
 import { localize, type LanguageMode } from "../language";
-import { DATE_RANGE_OPTIONS, dateRangeLabel, dateRangeShortLabel, type DateRangeFilter } from "../date-range";
+import {
+  DATE_RANGE_OPTIONS,
+  dateRangeLabel,
+  dateRangeShortLabel,
+  exactDateRangeLabel,
+  type DateRangeFilter,
+  type ExactDateRange,
+} from "../date-range";
 import { type LiveStatusFilter } from "../live-filter";
 import { liveStatusFilterLabel } from "../session-ui";
 import { SearchBox } from "../features/search/search-box";
@@ -42,6 +49,8 @@ export type ToolbarProps = {
   liveStatus: LiveStatusFilter;
   onSelectLiveStatus: (status: LiveStatusFilter) => void;
   dateRange: DateRangeFilter;
+  customDateRange: ExactDateRange | null;
+  onClearCustomDateRange: () => void;
   onSelectDateRange: (range: DateRangeFilter) => void;
   sortBy: SessionSortBy;
   onSelectSortBy: (sort: SessionSortBy) => void;
@@ -76,6 +85,8 @@ export function Toolbar(props: ToolbarProps): ReactElement {
     liveStatus,
     onSelectLiveStatus,
     dateRange,
+    customDateRange,
+    onClearCustomDateRange,
     onSelectDateRange,
     sortBy,
     onSelectSortBy,
@@ -149,10 +160,21 @@ export function Toolbar(props: ToolbarProps): ReactElement {
           </div>
           <div className="date-filter" role="group" aria-label={t("Session time range", "会话时间范围")}>
             <CalendarDays size={14} aria-hidden="true" />
+            {customDateRange ? (
+              <button
+                className="date-filter-custom active"
+                onClick={onClearCustomDateRange}
+                title={t("Clear exact date filter", "清除精确日期筛选")}
+                aria-label={t("Clear exact date filter", "清除精确日期筛选")}
+              >
+                <span>{exactDateRangeLabel(customDateRange, language)}</span>
+                <b aria-hidden="true">×</b>
+              </button>
+            ) : null}
             {DATE_RANGE_OPTIONS.map((option) => (
               <button
                 key={option.value}
-                className={dateRange === option.value ? "active" : ""}
+                className={!customDateRange && dateRange === option.value ? "active" : ""}
                 onClick={() => onSelectDateRange(option.value)}
                 title={dateRangeLabel(option.value, language)}
                 aria-label={dateRangeLabel(option.value, language)}

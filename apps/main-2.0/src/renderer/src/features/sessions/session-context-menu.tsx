@@ -141,7 +141,7 @@ export function SessionContextMenu({
       ) : null}
       <button
         onClick={onMigrate}
-        disabled={!canMigrate || localOnlyDisabled}
+        disabled={!canMigrate}
         title={migrateTitle}
       >
         <ArrowRightLeft size={14} /> {l("Migrate to…", "迁移到…")}

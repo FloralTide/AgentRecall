@@ -64,7 +64,14 @@ import type {
   UsageQuotaSnapshot,
 } from "../../core/types";
 import { formatCompactNumber, formatTokenCount } from "./format-count";
-import { DATE_RANGE_OPTIONS, dateRangeLabel, dateRangeShortLabel, resolveDateRange, type DateRangeFilter } from "./date-range";
+import {
+  DATE_RANGE_OPTIONS,
+  dateRangeLabel,
+  dateRangeShortLabel,
+  resolveDateRange,
+  type DateRangeFilter,
+  type ExactDateRange,
+} from "./date-range";
 import {
   filterSessionsByLiveStatus,
   getLiveSessionState,
@@ -303,6 +310,7 @@ export function App(): ReactElement {
   const [projectEnvironmentId, setProjectEnvironmentId] = useState<string | undefined>();
   const [visibility, setVisibility] = useState<ViewMode>("default");
   const [dateRange, setDateRange] = useState<DateRangeFilter>("all");
+  const [customDateRange, setCustomDateRange] = useState<ExactDateRange | null>(null);
   const [sortBy, setSortBy] = useState<SessionSortBy>("smart");
   const [liveStatus, setLiveStatus] = useState<LiveStatusFilter>("all");
   const [sessionPage, setSessionPage] = useState(1);
@@ -440,8 +448,21 @@ export function App(): ReactElement {
   migrationDialogRef.current = migrationDialog;
   const t = useCallback((en: string, zh: string) => localize(language, en, zh), [language]);
   const searchScopeKey = useMemo(
-    () => JSON.stringify([query, source, environmentId, tag ?? "", projectPath ?? "", projectEnvironmentId ?? "", visibility, dateRange, sortBy, liveStatus]),
-    [query, source, environmentId, tag, projectPath, projectEnvironmentId, visibility, dateRange, sortBy, liveStatus],
+    () => JSON.stringify([
+      query,
+      source,
+      environmentId,
+      tag ?? "",
+      projectPath ?? "",
+      projectEnvironmentId ?? "",
+      visibility,
+      dateRange,
+      customDateRange?.dateFrom ?? null,
+      customDateRange?.dateTo ?? null,
+      sortBy,
+      liveStatus,
+    ]),
+    [query, source, environmentId, tag, projectPath, projectEnvironmentId, visibility, dateRange, customDateRange, sortBy, liveStatus],
   );
   const previousSearchScopeKeyRef = useRef(searchScopeKey);
   const liveSessionKeys = useMemo(
@@ -454,7 +475,9 @@ export function App(): ReactElement {
   const searchAllMatching = useCallback(async (ignoreDate: boolean): Promise<SessionSearchResult[]> => {
     const searchScope = resolveSearchScope(environmentId, projectPath, projectEnvironmentId);
     if (searchScope.projectEnvironmentConflict) return [];
-    const { dateFrom, dateTo } = ignoreDate ? { dateFrom: undefined, dateTo: undefined } : resolveDateRange(dateRange);
+    const { dateFrom, dateTo } = ignoreDate
+      ? { dateFrom: undefined, dateTo: undefined }
+      : customDateRange ?? resolveDateRange(dateRange);
     const page = await window.sessionSearch.searchSessionPage({
       query,
       source,
@@ -471,13 +494,13 @@ export function App(): ReactElement {
     });
     if (page.hasMore) throw new Error(t("More than 100,000 sessions match. Narrow the filters first.", "匹配会话超过 100,000 个，请先缩小筛选范围。"));
     return page.sessions;
-  }, [environmentId, projectPath, projectEnvironmentId, dateRange, query, source, tag, visibility, sortBy, liveStatus, liveDetectionFailed, liveSearchKeys, t]);
+  }, [environmentId, projectPath, projectEnvironmentId, dateRange, customDateRange, query, source, tag, visibility, sortBy, liveStatus, liveDetectionFailed, liveSearchKeys, t]);
 
   const load = useCallback((): Promise<void> => {
     const requestId = ++loadSeqRef.current;
     const requestScopeKey = searchScopeKey;
     const searchScope = resolveSearchScope(environmentId, projectPath, projectEnvironmentId);
-    const { dateFrom, dateTo } = resolveDateRange(dateRange);
+    const { dateFrom, dateTo } = customDateRange ?? resolveDateRange(dateRange);
     const options: SearchOptions = {
       query,
       source,
@@ -512,7 +535,7 @@ export function App(): ReactElement {
         );
       });
     });
-  }, [query, source, environmentId, tag, projectPath, projectEnvironmentId, visibility, dateRange, sortBy, sessionPage, liveStatus, liveDetectionFailed, liveSearchKeys, refreshQueues.sessions, searchScopeKey]);
+  }, [query, source, environmentId, tag, projectPath, projectEnvironmentId, visibility, dateRange, customDateRange, sortBy, sessionPage, liveStatus, liveDetectionFailed, liveSearchKeys, refreshQueues.sessions, searchScopeKey]);
 
   useEffect(() => {
     setBulkSelectionActive(false);
@@ -954,16 +977,26 @@ export function App(): ReactElement {
     setSource(state.source ?? "all");
     setTag(state.tag);
     setVisibility(state.visibility);
+    setCustomDateRange(null);
     setDateRange(state.dateRange);
     setQueryBuilderOpen(false);
   }, []);
 
   const applySavedSearch = useCallback((saved: SavedSearch) => {
     const options = saved.options;
+    const dateFrom = options.dateFrom;
+    const dateTo = options.dateTo;
     if (options.query !== undefined) setQuery(options.query);
     setSource(options.source ?? "all");
     setTag(options.tag);
     setVisibility(options.visibility ?? "default");
+    if (typeof dateFrom === "number" && Number.isFinite(dateFrom) && typeof dateTo === "number" && Number.isFinite(dateTo)) {
+      setDateRange("all");
+      setCustomDateRange({ dateFrom, dateTo });
+    } else {
+      setCustomDateRange(null);
+      setDateRange("all");
+    }
     void window.sessionSearch.touchSavedSearch(saved.id).then(loadSavedSearches).catch(() => undefined);
     setSavedSearchesOpen(false);
   }, [loadSavedSearches]);
@@ -1153,7 +1186,14 @@ export function App(): ReactElement {
         setAppUpdateBusy(false);
       }
     });
-    const offOpenSession = window.sessionSearch.onOpenSession((sessionKey) => setSelectedKey(sessionKey));
+    const offOpenSession = window.sessionSearch.onOpenSession((sessionKey) => {
+      setSelectedKey(sessionKey);
+      void window.sessionSearch.getSession(sessionKey)
+        .then((session) => session ? openDetail(session) : undefined)
+        .catch((error) => {
+          setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+        });
+    });
     const offEnvironments = window.sessionSearch.onEnvironmentsUpdated((nextEnvironments) => {
       setSessionFamilyRefreshVersion((current) => current + 1);
       setEnvironments(nextEnvironments);
@@ -2490,7 +2530,12 @@ export function App(): ReactElement {
           searchRef,
           searchPlaceholder,
           onSearch: setQuery,
-          activeFilterCount: countActiveFilters({ source: source === "all" ? undefined : source, tag, visibility, dateRange }),
+          activeFilterCount: countActiveFilters({
+            source: source === "all" ? undefined : source,
+            tag,
+            visibility,
+            dateRange: customDateRange ? "all" : dateRange,
+          }) + (customDateRange ? 1 : 0),
           queryBuilderOpen,
           onToggleQueryBuilder: () => {
             setSavedSearchesOpen(false);
@@ -2506,7 +2551,12 @@ export function App(): ReactElement {
           liveStatus,
           onSelectLiveStatus: setLiveStatus,
           dateRange,
-          onSelectDateRange: setDateRange,
+          customDateRange,
+          onClearCustomDateRange: () => setCustomDateRange(null),
+          onSelectDateRange: (nextDateRange) => {
+            setCustomDateRange(null);
+            setDateRange(nextDateRange);
+          },
           sortBy,
           onSelectSortBy: setSortBy,
           aiAssistantOpen,
@@ -2556,7 +2606,12 @@ export function App(): ReactElement {
           },
         }}
         queryBuilderOpen={queryBuilderOpen}
-        queryBuilderInitial={{ source: source === "all" ? undefined : source, tag, visibility, dateRange }}
+        queryBuilderInitial={{
+          source: source === "all" ? undefined : source,
+          tag,
+          visibility,
+          dateRange: customDateRange ? "all" : dateRange,
+        }}
         sourceOptions={visibleSourceFilters}
         tagOptions={tags}
         onApplyQueryBuilder={applyQueryBuilder}

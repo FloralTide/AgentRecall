@@ -2070,6 +2070,33 @@ select:focus-visible {
   color: var(--accent-bright);
 }
 
+.date-filter:has(.date-filter-custom) {
+  width: auto;
+  flex-basis: auto;
+  max-width: 420px;
+}
+
+.date-filter .date-filter-custom {
+  gap: 5px;
+  min-width: 88px;
+  max-width: 210px;
+  padding-inline: 7px;
+}
+
+.date-filter-custom > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.date-filter-custom > b {
+  flex: 0 0 auto;
+  color: currentColor;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1;
+}
+
 .sort-filter {
   display: inline-flex;
   align-items: center;
