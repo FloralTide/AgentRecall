@@ -23,6 +23,7 @@ export function isLocalSessionStorage(session: SessionStorageIdentity): boolean 
 export function canDeleteSessionLocally(session: SessionEnvironmentIdentity): boolean {
   return session.source !== "workbuddy-cli"
     && session.source !== "kimi-cli"
+    && session.source !== "qwen-code"
     && (session.environmentKind !== "ssh" || session.sourceAvailable === false);
 }
 

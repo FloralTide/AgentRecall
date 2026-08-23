@@ -365,6 +365,21 @@ export const kimiAdapter: FormatAdapter = {
     return null;
   },
 };
+export const qwenAdapter: FormatAdapter = {
+  format: "qwen",
+  parseLine(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const row = raw as Record<string, unknown>;
+    const role = row.type === "user" || row.type === "assistant" ? row.type : null;
+    if (!role) return null;
+    const payload = row.systemPayload && typeof row.systemPayload === "object" ? row.systemPayload as Record<string, unknown> : null;
+    const message = row.message && typeof row.message === "object" ? row.message as Record<string, unknown> : null;
+    const displayText = role === "user" && typeof payload?.displayText === "string" ? payload.displayText : "";
+    const parts = Array.isArray(message?.parts) ? message.parts : [];
+    const text = displayText || parts.map((part) => part && typeof part === "object" && (part as Record<string, unknown>).thought !== true && typeof (part as Record<string, unknown>).text === "string" ? (part as Record<string, unknown>).text as string : "").filter(Boolean).join("\n");
+    return text ? { role, content: text, timestamp: timestampFromRaw(raw) } : null;
+  },
+};
 
 export function getFormatForSource(source: SessionSource): SessionFormat {
   return sessionSourceDescriptor(source).format;
@@ -387,6 +402,7 @@ export function getAdapter(sourceOrFormat: SessionSource | SessionFormat): Forma
   if (sourceOrFormat === "pi") return piAdapter;
   if (sourceOrFormat === "deepseek") return deepseekAdapter;
   if (sourceOrFormat === "kimi") return kimiAdapter;
+  if (sourceOrFormat === "qwen") return qwenAdapter;
   const format = getFormatForSource(sourceOrFormat);
   if (format === "claude") return claudeAdapter;
   if (format === "codebuddy") return codebuddyAdapter;
@@ -402,6 +418,7 @@ export function getAdapter(sourceOrFormat: SessionSource | SessionFormat): Forma
   if (format === "pi") return piAdapter;
   if (format === "deepseek") return deepseekAdapter;
   if (format === "kimi") return kimiAdapter;
+  if (format === "qwen") return qwenAdapter;
   return codexAdapter;
 }
 

@@ -103,6 +103,7 @@ export interface AppSettings {
   includeQoder: boolean;
   includePi: boolean;
   includeKimiCli: boolean;
+  includeQwenCode: boolean;
   includeDeepSeekCli: boolean;
   evalEnabled: boolean;
   openVikingMemoryEnabled: boolean;
@@ -197,6 +198,7 @@ export const defaultSettings: AppSettings = {
   includeQoder: false,
   includePi: false,
   includeKimiCli: false,
+  includeQwenCode: false,
   includeDeepSeekCli: false,
   evalEnabled: false,
   openVikingMemoryEnabled: false,

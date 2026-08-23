@@ -1781,6 +1781,7 @@ function runIndexSync(): Promise<IndexStatus> {
         includeZcode: settings.includeZcode,
         includePi: settings.includePi,
         includeKimiCli: settings.includeKimiCli,
+        includeQwenCode: settings.includeQwenCode,
         includeCursorAgent: settings.includeCursorAgent,
         includeTrae: settings.includeTrae,
         includeQoder: settings.includeQoder,

@@ -286,9 +286,8 @@ function classifyTarget(
   if (request.inactiveBefore !== undefined && target.lastActivityAt >= request.inactiveBefore) {
     return issueFor(target.sessionKey, "recent", "Session is not older than the selected cutoff.");
   }
-  if (target.source === "workbuddy-cli" || target.source === "kimi-cli") {
-    const label = target.source === "workbuddy-cli" ? "WorkBuddy" : "Kimi Code";
-    return issueFor(target.sessionKey, "read-only", `${label} session source files are read-only.`);
+  if (target.source === "workbuddy-cli" || target.source === "kimi-cli" || target.source === "qwen-code") {
+    return issueFor(target.sessionKey, "read-only", `${sessionSourceDescriptor(target.source).label} session source files are read-only.`);
   }
   if (SHARED_DATABASE_SOURCES.has(target.source)) return issueFor(target.sessionKey, "shared-database", "This source stores multiple sessions in a shared database.");
   if (target.source === "cursor-agent" && /(^|[\\/])state\.vscdb$/iu.test(target.filePath) && target.sourceAvailable) {

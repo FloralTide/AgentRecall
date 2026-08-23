@@ -2,11 +2,16 @@ import { describe, expect, it } from "vitest";
 import { canDeleteSessionLocally } from "./session-environment";
 
 describe("session environment", () => {
-  it("treats externally managed Kimi sessions as read-only", () => {
+  it("treats externally managed Kimi and Qwen sessions as read-only", () => {
     expect(canDeleteSessionLocally({
       environmentKind: "local",
       environmentId: "local",
       source: "kimi-cli",
+    })).toBe(false);
+    expect(canDeleteSessionLocally({
+      environmentKind: "local",
+      environmentId: "local",
+      source: "qwen-code",
     })).toBe(false);
   });
 

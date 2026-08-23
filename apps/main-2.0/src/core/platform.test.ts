@@ -19,6 +19,11 @@ describe("app settings", () => {
     expect(mergeAppSettings(defaultSettings, { includeWorkBuddy: true }).includeWorkBuddy).toBe(true);
   });
 
+  it("keeps Qwen Code indexing opt-in while accepting an explicit enable", () => {
+    expect(defaultSettings.includeQwenCode).toBe(false);
+    expect(mergeAppSettings(defaultSettings, { includeQwenCode: true }).includeQwenCode).toBe(true);
+  });
+
   it("keeps StepCode opt-in and resumes Codex and Claude sessions through the StepCode wrapper", () => {
     expect(defaultSettings.includeStepcode).toBe(false);
     const session = {

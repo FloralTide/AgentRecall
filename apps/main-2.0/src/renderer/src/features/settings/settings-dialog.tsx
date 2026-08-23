@@ -580,6 +580,10 @@ export function SettingsDialog({
                   <input type="checkbox" className="switch" checked={Boolean(settings?.includeKimiCli)} disabled={!settings} onChange={(event) => onSettingsChange({ includeKimiCli: event.currentTarget.checked })} />
                 </label>
                 <label className="settings-field settings-toggle">
+                  <div className="settings-field-text"><span className="settings-field-title">Include Qwen Code</span><span className="settings-field-sub">{l("Indexes local Qwen Code sessions read-only.", "以只读方式索引本地千问 Code 会话。")}</span></div>
+                  <input type="checkbox" className="switch" checked={Boolean(settings?.includeQwenCode)} disabled={!settings} onChange={(event) => onSettingsChange({ includeQwenCode: event.currentTarget.checked })} />
+                </label>
+                <label className="settings-field settings-toggle">
                   <div className="settings-field-text">
                     <span className="settings-field-title">Include CodeWiz</span>
                     <span className="settings-field-sub">{l("Indexes CodeWiz sessions from ~/.local/share/codewiz.", "索引 ~/.local/share/codewiz 中的 CodeWiz 会话。")}</span>

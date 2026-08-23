@@ -117,6 +117,7 @@ describe("platform application resolution", () => {
     expect(defaultSettings.includeQoder).toBe(false);
     expect(defaultSettings.includePi).toBe(false);
     expect(defaultSettings.includeKimiCli).toBe(false);
+    expect(defaultSettings.includeQwenCode).toBe(false);
   });
 
   it("preserves persisted personalization flags across app restarts and updates", () => {
