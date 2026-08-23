@@ -2,6 +2,11 @@ import type { LanguageMode } from "./language";
 
 export type DateRangeFilter = "all" | "7d" | "30d" | "90d";
 
+export interface ExactDateRange {
+  dateFrom: number;
+  dateTo: number;
+}
+
 export interface DateRangeOption {
   value: DateRangeFilter;
   label: { en: string; zh: string };
@@ -23,6 +28,21 @@ export function dateRangeLabel(value: DateRangeFilter, language: LanguageMode): 
 export function dateRangeShortLabel(value: DateRangeFilter, language: LanguageMode): string {
   const option = DATE_RANGE_OPTIONS.find((item) => item.value === value) ?? DATE_RANGE_OPTIONS[0];
   return language === "zh" ? option.shortLabel.zh : option.shortLabel.en;
+}
+
+export function exactDateRangeLabel(range: ExactDateRange, language: LanguageMode): string {
+  const start = new Date(range.dateFrom);
+  const end = new Date(Math.max(range.dateFrom, range.dateTo));
+  const locale = language === "zh" ? "zh-CN" : "en-US";
+  const sameDay = start.getFullYear() === end.getFullYear()
+    && start.getMonth() === end.getMonth()
+    && start.getDate() === end.getDate();
+  const formatter = new Intl.DateTimeFormat(locale, {
+    ...(start.getFullYear() === end.getFullYear() ? {} : { year: "numeric" }),
+    month: "short",
+    day: "numeric",
+  });
+  return sameDay ? formatter.format(start) : `${formatter.format(start)} – ${formatter.format(end)}`;
 }
 
 export function resolveDateRange(value: DateRangeFilter, now = Date.now()): { dateFrom?: number; dateTo?: number } {
