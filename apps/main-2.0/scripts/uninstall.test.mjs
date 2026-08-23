@@ -14,7 +14,7 @@ after(async () => {
   await Promise.all([...temporaryDirectories].map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-test("uninstall removes only AgentRecall integrations and caches", async () => {
+test("uninstall removes current and legacy V2 integrations while preserving unrelated config", async () => {
   const homeDir = await mkdtemp(path.join(os.tmpdir(), "agent-session-uninstall-"));
   temporaryDirectories.add(homeDir);
   const claudeSettings = path.join(homeDir, ".claude", "settings.json");
@@ -40,15 +40,15 @@ test("uninstall removes only AgentRecall integrations and caches", async () => {
   fs.writeFileSync(path.join(homeDir, ".claude.json"), JSON.stringify({
     custom: true,
     mcpServers: {
-      "agent-recall": { command: "node", args: ["v1"] },
-      "agent-recall-v2": { command: "node", args: ["v2"] },
+      "agent-recall": { command: "node", args: ["gateway"] },
+      "agent-recall-v2": { command: "node", args: ["legacy"] },
       keep: { command: "keep" },
     },
   }));
   fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true });
   fs.writeFileSync(
     path.join(homeDir, ".codex", "config.toml"),
-    '[model]\nname="keep"\n\n[mcp_servers.agent_recall]\ncommand="node"\nargs=["v1"]\n\n[mcp_servers.agent_recall_v2]\ncommand="node"\nargs=["v2"]\n',
+    '[model]\nname="keep"\n\n[mcp_servers.agent_recall]\ncommand="node"\nargs=["gateway"]\n\n[mcp_servers.agent_recall_v2]\ncommand="node"\nargs=["legacy"]\n',
   );
   fs.writeFileSync(path.join(homeDir, ".codex", "hooks.json"), JSON.stringify({ hooks: { Stop: [
     { hooks: [{ type: "command", command: 'node "/global/bin/session-sync-record.cjs" --agent codex' }] },
@@ -80,11 +80,11 @@ test("uninstall removes only AgentRecall integrations and caches", async () => {
   const claudeConfig = JSON.parse(fs.readFileSync(path.join(homeDir, ".claude.json"), "utf8"));
   assert.equal(claudeConfig.custom, true);
   assert.equal(claudeConfig.mcpServers["agent-recall-v2"], undefined);
-  assert.deepEqual(claudeConfig.mcpServers["agent-recall"], { command: "node", args: ["v1"] });
+  assert.equal(claudeConfig.mcpServers["agent-recall"], undefined);
   assert.deepEqual(claudeConfig.mcpServers.keep, { command: "keep" });
   const codexConfig = fs.readFileSync(path.join(homeDir, ".codex", "config.toml"), "utf8");
   assert.doesNotMatch(codexConfig, /agent_recall_v2/);
-  assert.match(codexConfig, /mcp_servers\.agent_recall/);
+  assert.doesNotMatch(codexConfig, /mcp_servers\.agent_recall/);
   assert.match(codexConfig, /name="keep"/);
   const codexHooks = JSON.parse(fs.readFileSync(path.join(homeDir, ".codex", "hooks.json"), "utf8"));
   assert.equal(codexHooks.hooks.Stop.length, 1);

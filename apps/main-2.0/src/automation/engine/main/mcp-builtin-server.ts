@@ -42,7 +42,7 @@ export interface BuiltinSessionSearchDeps {
  * testing the connection (the registry env model resolves values as host
  * environment variable names, which does not fit servers that need literal
  * values such as a bridge path or an in-memory token). `hubBindable: false`
- * hides the server from per-Agent hub bindings.
+ * keeps context-scoped tools out of ordinary Runtime injection.
  */
 export interface ManagedMcpDeps extends BuiltinSessionSearchDeps {
   testEnv?(): Record<string, string>;
@@ -151,27 +151,25 @@ export class ManagedMcpServer implements ManagedMcp {
 }
 
 /**
- * The app-managed AgentRecall session-search MCP server, registered into
- * Claude Code / Codex / CodeBuddy configs and bindable to AgentRecall agents.
+ * The app-managed Session tool source. Its frequent tools are exposed directly
+ * by the AgentRecall Gateway; the remaining enabled tools use the index.
  */
 export class BuiltinSessionSearchServer extends ManagedMcpServer {
-  constructor(deps: BuiltinSessionSearchDeps) {
+  constructor(deps: ManagedMcpDeps) {
     super(deps);
   }
 }
 
-/** The app-managed, hub-bindable MCP server for discovering and reading managed Skills. */
+/** The app-managed Skill source behind the Gateway's direct Skill tools. */
 export class BuiltinSkillMcpServer extends ManagedMcpServer {
-  constructor(deps: BuiltinSessionSearchDeps) {
+  constructor(deps: ManagedMcpDeps) {
     super(deps);
   }
 }
 
 /**
- * The app-managed AgentRecall workflow MCP server. Enabled state maps to bulk
- * registration into `~/.codex/config.toml` for configured Codex agents. It is
- * not hub-bindable because its launch config needs literal env (bridge path and
- * in-memory token) that do not fit the registry env-as-host-name model.
+ * The app-managed Workflow source for the progressive Gateway index. Ephemeral
+ * Workflow and Review tools remain scoped to their owning execution context.
  */
 export class BuiltinWorkflowMcpServer extends ManagedMcpServer {
   constructor(deps: ManagedMcpDeps) {

@@ -23,6 +23,13 @@ interface JsonRpcRequest {
 }
 
 const TOOL_ROUTES: Record<string, string> = {
+  search_tools: "/mcp/gateway/tools/search",
+  get_tool: "/mcp/gateway/tools/get",
+  call_tool: "/mcp/gateway/tools/call",
+  list_skills: "/mcp/gateway/skills/list",
+  get_skill: "/mcp/gateway/skills/get",
+  search_sessions: "/mcp/gateway/sessions/search",
+  get_session: "/mcp/gateway/sessions/get",
   agent_templates_list: "/mcp/agent-templates/list",
   skill_templates_list: "/mcp/skill-templates/list",
   agents_list: "/mcp/agents/list",
@@ -242,7 +249,72 @@ const READ_ONLY_TOOL_NAMES = new Set([
   "workflow_outputs_list",
 ]);
 
+function gatewayToolDefinitions(): McpToolDefinition[] {
+  return [
+    {
+      name: "search_tools",
+      description: "分页浏览 AgentRecall 中已开放的索引工具。可通过 sourceId 只查看某个内置或第三方 MCP 工具源；结果仅包含简要索引，完整参数请调用 get_tool。",
+      inputSchema: objectSchema({
+        sourceId: { type: "string", description: "可选的工具源 ID；省略时浏览全部已开放索引工具。" },
+        limit: { type: "integer", minimum: 1, maximum: 50, default: 20 },
+        cursor: { type: "string", description: "上一页返回的 nextCursor。" },
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: "get_tool",
+      description: "根据 search_tools 返回的 toolRef 读取一个工具的完整说明和输入参数 Schema。",
+      inputSchema: objectSchema({ toolRef: { type: "string", minLength: 1 } }, ["toolRef"]),
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: "call_tool",
+      description: "调用已通过 AgentRecall MCP 页面启用的索引工具。先用 search_tools 获取 toolRef，再用 get_tool 查看参数。",
+      inputSchema: objectSchema({
+        toolRef: { type: "string", minLength: 1 },
+        arguments: { type: "object", additionalProperties: true },
+      }, ["toolRef"]),
+    },
+    {
+      name: "list_skills",
+      description: "列出 AgentRecall 已管理的 Skill 简要索引；需要完整说明时再调用 get_skill。",
+      inputSchema: objectSchema({}),
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: "get_skill",
+      description: "根据 list_skills 返回的 managedId 读取一个 Skill 的完整 Markdown 说明。",
+      inputSchema: objectSchema({ managedId: { type: "string", minLength: 1 } }, ["managedId"]),
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: "search_sessions",
+      description: "搜索 AgentRecall 已索引的编码 Agent 会话，返回简要结果和 sessionKey；需要完整上下文时再调用 get_session。",
+      inputSchema: objectSchema({
+        query: { type: "string" },
+        source: { type: "string" },
+        project: { type: "string" },
+        limit: { type: "integer", minimum: 1, maximum: 50 },
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: "get_session",
+      description: "根据 search_sessions 返回的 sessionKey 分页读取会话内容。",
+      inputSchema: objectSchema({
+        sessionKey: { type: "string", minLength: 1 },
+        maxMessages: { type: "integer", minimum: 1, maximum: 200 },
+        offset: { type: "integer", minimum: 0 },
+      }, ["sessionKey"]),
+      annotations: { readOnlyHint: true },
+    },
+  ];
+}
+
 export function mcpToolDefinitions(): McpToolDefinition[] {
+  const managed = Boolean(process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN);
+  const studioScoped = Boolean(process.env.AGENT_RECALL_STUDIO_TOKEN);
+  if (process.env.AGENT_RECALL_MCP_MODE === "gateway") return gatewayToolDefinitions();
   const tools: McpToolDefinition[] = [
     {
       name: "agent_templates_list",
@@ -511,7 +583,6 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
       }, ["workflowId", "runId"]),
     },
   ];
-  const studioScoped = Boolean(process.env.AGENT_RECALL_STUDIO_TOKEN);
   if (studioScoped) {
     tools.push(
       {
@@ -645,7 +716,6 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
       },
     );
   }
-  const managed = Boolean(process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN);
   if (managed && process.env.AGENT_RECALL_WORKFLOW_RUN_ID && process.env.AGENT_RECALL_WORKFLOW_NODE_ID && process.env.AGENT_RECALL_WORKFLOW_NODE_EXECUTION_ID) {
     tools.push({
       name: "workflow_node_complete",
@@ -679,9 +749,9 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
 export function resolveBridgeDiscoveryPath(): string {
   if (process.env.AGENT_RECALL_MCP_BRIDGE) return process.env.AGENT_RECALL_MCP_BRIDGE;
   if (process.env.AGENT_RECALL_WORKFLOW_MCP_BRIDGE) return process.env.AGENT_RECALL_WORKFLOW_MCP_BRIDGE;
-  if (process.platform === "darwin") return path.join(os.homedir(), "Library", "Application Support", "AgentRecall", "mcp-bridge.json");
-  if (process.platform === "win32") return path.join(process.env.APPDATA || os.homedir(), "AgentRecall", "mcp-bridge.json");
-  return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "agent-recall-v2", "mcp-bridge.json");
+  if (process.platform === "darwin") return path.join(os.homedir(), "Library", "Application Support", "agent-recall-v2", "automation-mcp-bridge.json");
+  if (process.platform === "win32") return path.join(process.env.APPDATA || os.homedir(), "agent-recall-v2", "automation-mcp-bridge.json");
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "agent-recall-v2", "automation-mcp-bridge.json");
 }
 
 async function readBridgeDiscovery(): Promise<{ host: string; port: number; token: string }> {
@@ -751,7 +821,10 @@ async function handleJsonRpc(request: JsonRpcRequest): Promise<void> {
         result: {
           protocolVersion: "2024-11-05",
           capabilities: { tools: {} },
-          serverInfo: { name: "agent-recall-v2", version: "0.1.0" },
+          serverInfo: {
+            name: process.env.AGENT_RECALL_MCP_MODE === "gateway" ? "agent-recall" : "agent-recall-v2",
+            version: "0.1.0",
+          },
         },
       });
       return;
@@ -768,13 +841,17 @@ async function handleJsonRpc(request: JsonRpcRequest): Promise<void> {
       const params = request.params && typeof request.params === "object" ? (request.params as Record<string, unknown>) : {};
       const name = typeof params.name === "string" ? params.name : "";
       const result = await callMcpTool(name, params.arguments ?? {});
-      const ok = Boolean(result && typeof result === "object" && "ok" in result ? (result as { ok?: unknown }).ok : true);
+      const resultRecord = result && typeof result === "object" && !Array.isArray(result)
+        ? result as Record<string, unknown>
+        : undefined;
+      const isError = resultRecord?.isError === true
+        || Boolean(resultRecord && "ok" in resultRecord && !resultRecord.ok);
       writeJsonRpc({
         jsonrpc: "2.0",
         id: request.id,
         result: {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-          isError: !ok,
+          isError,
         },
       });
       return;

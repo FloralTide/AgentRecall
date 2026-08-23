@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Eye, FileJson, PlugZap, Power, Save, Server, Trash2, Wifi } from "lucide-react";
+import { Eye, FileJson, Link2, PlugZap, Power, Save, Server, Trash2, Wifi } from "lucide-react";
 import type { Language } from "../../app/language";
 import { APP_SAVE_REQUEST_EVENT } from "../../app/save-shortcut";
 import {
@@ -11,16 +11,14 @@ import {
   WorkbenchHeader,
   WorkbenchLayout,
   WorkbenchSection,
-  WorkbenchTabs,
 } from "../../ui/workbench/Workbench";
 import { useMcpRegistry } from "./useMcpRegistry";
-import { McpAgentBindings } from "./McpAgentBindings";
+import { McpClientConnectionsDialog } from "./McpClientConnectionsDialog";
 import { McpToolPreview } from "./McpToolPreview";
 import { McpJsonImport } from "./McpJsonImport";
 import { McpJsonEdit } from "./McpJsonEdit";
 import { McpReferenceEditor } from "./McpReferenceEditor";
 import { toolCountLabel } from "./mcp-tools";
-import type { ConfiguredAgent } from "../../../../shared/types";
 import type { McpServerDefinition, McpToolDefinition } from "../../../../shared/mcp/types";
 
 function serverDisplayName(server: McpServerDefinition, zh: boolean): string {
@@ -46,21 +44,13 @@ function serverDescription(server: McpServerDefinition, zh: boolean): string | u
   return server.description;
 }
 
-export function McpPage({
-  language = "en",
-  agents,
-  onSaveAgents,
-}: {
-  language?: Language;
-  agents: ConfiguredAgent[];
-  onSaveAgents?: (agents: ConfiguredAgent[]) => Promise<void>;
-}) {
+export function McpPage({ language = "en" }: { language?: Language }) {
   const zh = language === "zh";
   const model = useMcpRegistry();
-  const [view, setView] = useState<"servers" | "agents">("servers");
   const [previewTool, setPreviewTool] = useState<McpToolDefinition>();
   const [importOpen, setImportOpen] = useState(false);
   const [jsonEditOpen, setJsonEditOpen] = useState(false);
+  const [clientsOpen, setClientsOpen] = useState(false);
   useEffect(() => {
     const handler = (event: BeforeUnloadEvent) => {
       if (!model.dirty) return;
@@ -118,11 +108,11 @@ export function McpPage({
         title={
           zh
             ? server.enabled
-              ? "关闭后，该 MCP Server 将不再提供给任何 Agent（配置保留）。"
-              : "开启后，该 MCP Server 可供 Agent 装配使用。"
+              ? "关闭后，该工具源将退出 AgentRecall Gateway 索引（配置保留）。"
+              : "开启后，该工具源将加入 AgentRecall Gateway 索引。"
             : server.enabled
-              ? "When off, this MCP server is offered to no agents (its config is kept)."
-              : "When on, this MCP server can be assigned to agents."
+              ? "When off, this source leaves the AgentRecall Gateway index (its config is kept)."
+              : "When on, this source joins the AgentRecall Gateway index."
         }
       >
         <input
@@ -143,21 +133,26 @@ export function McpPage({
         title="MCP"
         description={
           zh
-            ? "统一管理项目内置 MCP 与自定义工具服务。"
-            : "Manage project built-ins and custom tool servers in one place."
+            ? "一个 Gateway 连接 Codex 与 Claude Code，并渐进式开放 AgentRecall 的全部工具。"
+            : "One Gateway connects Codex and Claude Code and progressively exposes AgentRecall tools."
         }
+        action={(
+          <button className="control-btn compact secondary" type="button" onClick={() => setClientsOpen(true)}>
+            <Link2 size={13} />
+            {zh ? "连接客户端" : "Connect clients"}
+          </button>
+        )}
       />
-      <WorkbenchTabs
-        label={zh ? "MCP 视图" : "MCP views"}
-        active={view}
-        onChange={setView}
-        tabs={[
-          { id: "servers", label: zh ? "服务器" : "Servers", count: model.servers.length },
-          { id: "agents", label: zh ? "Agent 绑定" : "Agent bindings", count: agents.length },
-        ]}
-      />
-      {view === "agents" ? <McpAgentBindings language={language} agents={agents} servers={model.servers} onSaveAgents={onSaveAgents} /> : (
-        <>
+      <div className="mcp-gateway-overview">
+        <div>
+          <span>{zh ? "直接工具" : "Direct tools"}</span>
+          <strong>list_skills · get_skill · search_sessions · get_session</strong>
+        </div>
+        <div>
+          <span>{zh ? "渐进式索引" : "Progressive index"}</span>
+          <strong>search_tools → get_tool → call_tool</strong>
+        </div>
+      </div>
       {model.error ? (
         <div className="workbench-error" role="alert">
           {model.error}
@@ -168,7 +163,7 @@ export function McpPage({
           browser={
             <>
               <BrowserHeader
-                label={zh ? "服务器" : "Servers"}
+                label={zh ? "工具源" : "Tool sources"}
                 actionLabel={zh ? "新建 MCP Server" : "New MCP server"}
                 onAdd={model.create}
                 extra={
@@ -186,7 +181,7 @@ export function McpPage({
               <div className="workbench-browser-list">
                 <section className="mcp-browser-group">
                   <header>
-                    <span>{zh ? "项目内置" : "Project built-ins"}</span>
+                    <span>{zh ? "AgentRecall 内置" : "AgentRecall built-ins"}</span>
                     <small>{builtins.length}</small>
                   </header>
                   {builtins.map((server) => renderServerRow(server, serverDisplayName(server, zh)))}
@@ -210,7 +205,7 @@ export function McpPage({
             <>
               <DetailToolbar
                 title={serverDisplayName(draft, zh)}
-                meta={`${draft.managed ? (zh ? "项目内置" : "Project built-in") : (zh ? "自定义" : "Custom")} · ${draft.transport.toUpperCase()}`}
+                meta={`${draft.managed ? (zh ? "AgentRecall 内置" : "AgentRecall built-in") : (zh ? "自定义" : "Custom")} · ${draft.transport.toUpperCase()}`}
                 actions={
                   <>
                     <InlineStatus
@@ -447,11 +442,11 @@ export function McpPage({
                   description={
                     draft.tools.length
                       ? zh
-                        ? `连接测试成功后自动刷新工具清单。已启用 ${draft.tools.length - (draft.disabledTools?.length ?? 0)} / ${draft.tools.length} 个工具。`
-                        : `The tool catalog refreshes after a successful connection test. ${draft.tools.length - (draft.disabledTools?.length ?? 0)} of ${draft.tools.length} tools enabled.`
+                        ? `保存连接配置或手动测试后自动刷新工具清单。已启用 ${draft.tools.length - (draft.disabledTools?.length ?? 0)} / ${draft.tools.length} 个工具。`
+                        : `The tool catalog refreshes after saving connection changes or testing manually. ${draft.tools.length - (draft.disabledTools?.length ?? 0)} of ${draft.tools.length} tools enabled.`
                       : zh
-                        ? "连接测试成功后自动刷新工具清单。"
-                        : "The tool catalog refreshes after a successful connection test."
+                        ? "保存连接配置或手动测试后自动刷新工具清单。"
+                        : "The tool catalog refreshes after saving connection changes or testing manually."
                   }
                 >
                   {draft.tools.length ? (
@@ -461,6 +456,7 @@ export function McpPage({
                           <tr>
                             <th>{zh ? "启用" : "Enabled"}</th>
                             <th>{zh ? "工具" : "Tool"}</th>
+                            <th>{zh ? "开放方式" : "Exposure"}</th>
                             <th>{zh ? "描述" : "Description"}</th>
                             <th aria-label={zh ? "操作" : "Actions"} />
                           </tr>
@@ -483,6 +479,13 @@ export function McpPage({
                                 </td>
                                 <td className="mono">
                                   <strong>{tool.name}</strong>
+                                </td>
+                                <td>
+                                  <span className={`mcp-exposure-badge ${isDirectTool(draft.id, tool.name) ? "is-direct" : ""}`}>
+                                    {isDirectTool(draft.id, tool.name)
+                                      ? (zh ? "直接工具" : "Direct")
+                                      : (zh ? "索引调用" : "Indexed")}
+                                  </span>
                                 </td>
                                 <td>
                                   {tool.description ||
@@ -511,8 +514,8 @@ export function McpPage({
                       title={zh ? "还没有发现工具" : "No tools discovered"}
                       description={
                         zh
-                          ? "保存配置并测试连接，以读取 Server 提供的工具。"
-                          : "Save the configuration and test the connection to discover tools."
+                          ? "保存连接配置即可自动发现工具，也可以手动测试。"
+                          : "Save the connection to discover tools automatically, or test it manually."
                       }
                     />
                   )}
@@ -525,8 +528,8 @@ export function McpPage({
               title={zh ? "还没有 MCP Server" : "No MCP servers"}
               description={
                 zh
-                  ? "添加本地命令或远程 HTTP Server，供 Agent 装配使用。"
-                  : "Add a local command or remote HTTP server for your Agents."
+                  ? "添加本地命令或远程 HTTP Server，让工具进入 AgentRecall Gateway 索引。"
+                  : "Add a local command or remote HTTP server to the AgentRecall Gateway index."
               }
               actionLabel={zh ? "新建 Server" : "New server"}
               onAction={model.create}
@@ -534,8 +537,6 @@ export function McpPage({
           )}
         </WorkbenchLayout>
       </div>
-        </>
-      )}
       {previewTool ? (
         <McpToolPreview
           language={language}
@@ -560,6 +561,14 @@ export function McpPage({
           onApply={model.update}
         />
       ) : null}
+      {clientsOpen ? (
+        <McpClientConnectionsDialog language={language} onClose={() => setClientsOpen(false)} />
+      ) : null}
     </section>
   );
+}
+
+function isDirectTool(serverId: string, toolName: string): boolean {
+  return (serverId === "agent-recall-session-search" && (toolName === "search_sessions" || toolName === "get_session"))
+    || (serverId === "agent-recall-skills" && (toolName === "list_skills" || toolName === "get_skill"));
 }

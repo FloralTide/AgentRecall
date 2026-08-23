@@ -13,6 +13,7 @@ await build({
   entryPoints: [
     path.join(root, "src", "mcp", "migration-entry.ts"),
     path.join(root, "src", "mcp", "skill-entry.ts"),
+    path.join(root, "src", "mcp", "gateway-entry.ts"),
     path.join(root, "src", "mcp", "workflow-entry.ts"),
   ],
   outdir,

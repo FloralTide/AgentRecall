@@ -19,7 +19,22 @@ export type { ResourceSourceType } from "./resource";
 export type { RuntimeConversation } from "./runtime/conversation";
 export type { RuntimeUsage } from "../../../shared/runtime/usage";
 export type { AgentRevision, AgentType, ConfiguredAgent } from "./agent/types";
-export type { AgentMcpBinding, McpServerDefinition, McpToolDefinition, McpTransport } from "./mcp/types";
+export type {
+  AgentMcpBinding,
+  McpExternalClientConnection,
+  McpExternalClientConnections,
+  McpExternalClientId,
+  McpExternalClientUpdate,
+  McpGatewayCallRequest,
+  McpGatewayGetRequest,
+  McpGatewaySearchRequest,
+  McpGatewaySearchResult,
+  McpGatewayToolDetail,
+  McpGatewayToolSummary,
+  McpServerDefinition,
+  McpToolDefinition,
+  McpTransport,
+} from "./mcp/types";
 export type { EvaluationCaseResult, EvaluationDataset, EvaluationDatasetItem, EvaluationEvaluator, EvaluationExperiment, EvaluationRun, EvaluationRunPage, EvaluationRunSummary, EvaluationScore, EvaluatorKind, ListEvaluationRunsRequest } from "./evaluation/types";
 export type { WorkflowDraftState, WorkflowGrillMessage, WorkflowSidebarItem, WorkflowStoreState } from "./workflow/draft";
 export type {

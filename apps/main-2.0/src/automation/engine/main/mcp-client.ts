@@ -4,12 +4,11 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { McpServerDefinition, McpToolDefinition } from "../shared/mcp/types";
 
-export async function discoverMcpTools(
+function createTransport(
   server: McpServerDefinition,
   literalEnv?: Record<string, string>,
-): Promise<McpToolDefinition[]> {
-  const client = new Client({ name: "agent-recall-v2", version: "0.1.0" });
-  const transport = server.transport === "http"
+): Transport {
+  return server.transport === "http"
     ? new StreamableHTTPClientTransport(new URL(required(server.url, "HTTP URL")), {
         requestInit: { headers: resolvedHeaders(server) },
       })
@@ -18,6 +17,14 @@ export async function discoverMcpTools(
         args: server.args,
         env: literalEnv ?? Object.fromEntries(Object.entries(server.env).map(([key, envName]) => [key, process.env[envName] ?? ""])),
       });
+}
+
+export async function discoverMcpTools(
+  server: McpServerDefinition,
+  literalEnv?: Record<string, string>,
+): Promise<McpToolDefinition[]> {
+  const client = new Client({ name: "agent-recall-v2", version: "0.1.0" });
+  const transport = createTransport(server, literalEnv);
   try {
     await withTimeout(client.connect(transport as Transport), 10_000);
     const result = await withTimeout(client.listTools(), 10_000);
@@ -27,6 +34,22 @@ export async function discoverMcpTools(
       inputSchema: tool.inputSchema as Record<string, unknown>,
       ...(tool.annotations?.readOnlyHint === true ? { readOnly: true } : {}),
     }));
+  } finally {
+    await client.close().catch(() => undefined);
+  }
+}
+
+export async function invokeMcpTool(
+  server: McpServerDefinition,
+  toolName: string,
+  args: Record<string, unknown>,
+  literalEnv?: Record<string, string>,
+): Promise<unknown> {
+  const client = new Client({ name: "agent-recall-v2-gateway", version: "0.1.0" });
+  const transport = createTransport(server, literalEnv);
+  try {
+    await withTimeout(client.connect(transport), 10_000);
+    return await withTimeout(client.callTool({ name: toolName, arguments: args }), 60_000);
   } finally {
     await client.close().catch(() => undefined);
   }

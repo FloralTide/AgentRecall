@@ -31,6 +31,15 @@ export interface StartMcpBridgeOptions {
   bundledSkillsRoot?: string;
   fetcher?: typeof fetch;
   updateConfiguredAgents?: (agents: ConfiguredAgent[]) => Promise<AppSnapshot>;
+  gateway?: {
+    searchTools(body: unknown): Promise<unknown>;
+    getTool(body: unknown): Promise<unknown>;
+    callTool(body: unknown): Promise<unknown>;
+    listSkills(body: unknown): Promise<unknown>;
+    getSkill(body: unknown): Promise<unknown>;
+    searchSessions(body: unknown): Promise<unknown>;
+    getSession(body: unknown): Promise<unknown>;
+  };
   studio?: {
     handleMcpRequest(
       token: string | undefined,
@@ -46,6 +55,7 @@ interface McpBridgeRuntimeOptions {
   studio?: StartMcpBridgeOptions["studio"];
   studioToken?: string;
   updateConfiguredAgents?: StartMcpBridgeOptions["updateConfiguredAgents"];
+  gateway?: StartMcpBridgeOptions["gateway"];
 }
 
 function jsonResponse(response: http.ServerResponse, statusCode: number, payload: unknown): void {
@@ -64,6 +74,13 @@ async function readJsonBody(request: http.IncomingMessage): Promise<unknown> {
 type McpBridgeAccess = "managed" | "read_only";
 
 const READ_ONLY_ROUTES = new Set([
+  "/mcp/gateway/tools/search",
+  "/mcp/gateway/tools/get",
+  "/mcp/gateway/tools/call",
+  "/mcp/gateway/skills/list",
+  "/mcp/gateway/skills/get",
+  "/mcp/gateway/sessions/search",
+  "/mcp/gateway/sessions/get",
   "/mcp/agent-templates/list",
   "/mcp/skill-templates/list",
   "/mcp/skills/search-online",
@@ -281,6 +298,17 @@ async function upsertAgent(
 }
 
 async function routeWorkflowRequest(hub: AgentHub, route: string, body: unknown, options: McpBridgeRuntimeOptions = {}): Promise<unknown> {
+  if (route.startsWith("/mcp/gateway/")) {
+    if (!options.gateway) return { ok: false, error: "AgentRecall Gateway is unavailable." };
+    if (route === "/mcp/gateway/tools/search") return options.gateway.searchTools(body);
+    if (route === "/mcp/gateway/tools/get") return options.gateway.getTool(body);
+    if (route === "/mcp/gateway/tools/call") return options.gateway.callTool(body);
+    if (route === "/mcp/gateway/skills/list") return options.gateway.listSkills(body);
+    if (route === "/mcp/gateway/skills/get") return options.gateway.getSkill(body);
+    if (route === "/mcp/gateway/sessions/search") return options.gateway.searchSessions(body);
+    if (route === "/mcp/gateway/sessions/get") return options.gateway.getSession(body);
+    return { ok: false, error: `Unknown AgentRecall Gateway route: ${route}` };
+  }
   if (route.startsWith("/mcp/studio/") || route.startsWith("/mcp/workspace/")) {
     if (!options.studio) return { ok: false, error: "Studio collaboration is unavailable." };
     return options.studio.handleMcpRequest(options.studioToken, route, body);
@@ -489,6 +517,7 @@ export async function startMcpBridge(hub: AgentHub, options: StartMcpBridgeOptio
         if (options.fetcher) runtimeOptions.fetcher = options.fetcher;
         if (options.studio) runtimeOptions.studio = options.studio;
         if (options.updateConfiguredAgents) runtimeOptions.updateConfiguredAgents = options.updateConfiguredAgents;
+        if (options.gateway) runtimeOptions.gateway = options.gateway;
         if (typeof studioToken === "string") runtimeOptions.studioToken = studioToken;
         const payload = await routeWorkflowRequest(hub, route, body, runtimeOptions);
         jsonResponse(response, 200, payload);

@@ -1,22 +1,116 @@
 #!/usr/bin/env node
 "use strict";
 
-// Registers (or removes) the agent-recall MCP server in Claude Code and
-// Codex configs so they can search past sessions. Run with `uninstall` to remove.
+// Registers (or removes) the single AgentRecall Gateway MCP in Claude Code and
+// Codex configs. Run with `uninstall` to remove.
 
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const SERVER_NAME = "agent-recall-v2";
-const CODEX_SECTION = "mcp_servers.agent_recall_v2";
+const SERVER_NAME = "agent-recall";
+const LEGACY_SERVER_NAME = "agent-recall-v2";
+const CODEX_SECTION = "mcp_servers.agent_recall";
+const LEGACY_CODEX_SECTION = "mcp_servers.agent_recall_v2";
+const CLAUDE_PERMISSION = "mcp__agent-recall__*";
+const LEGACY_CLAUDE_PERMISSION = "mcp__agent-recall-v2__*";
 
 function homeDir() {
   return process.env.AGENT_RECALL_TEST_HOME || os.homedir();
 }
 
 function serverScriptPath() {
+  return path.join(__dirname, "..", "out", "mcp", "gateway-entry.js");
+}
+
+function sessionSearchScriptPath() {
   return path.join(__dirname, "agent-recall-mcp.mjs");
+}
+
+function gatewayDiscoveryPath(home = homeDir()) {
+  const explicitBridge = process.env.AGENT_RECALL_MCP_BRIDGE?.trim();
+  if (explicitBridge) return explicitBridge;
+  const explicitUserData = process.env.AGENT_RECALL_USER_DATA_DIR?.trim();
+  if (explicitUserData) return path.join(explicitUserData, "automation-mcp-bridge.json");
+  const appData = process.env.AGENT_RECALL_APP_DATA_DIR?.trim();
+  if (appData) return path.join(appData, "agent-recall-v2", "automation-mcp-bridge.json");
+  if (process.platform === "darwin") {
+    return path.join(home, "Library", "Application Support", "agent-recall-v2", "automation-mcp-bridge.json");
+  }
+  if (process.platform === "win32") {
+    return path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "agent-recall-v2", "automation-mcp-bridge.json");
+  }
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(home, ".config"), "agent-recall-v2", "automation-mcp-bridge.json");
+}
+
+function claudeConfigPath(home = homeDir()) {
+  const configDir = process.env.CLAUDE_CONFIG_DIR?.trim();
+  return configDir ? path.join(configDir, ".claude.json") : path.join(home, ".claude.json");
+}
+
+function claudeSettingsPath(home = homeDir()) {
+  const configDir = process.env.CLAUDE_CONFIG_DIR?.trim() || path.join(home, ".claude");
+  return path.join(configDir, "settings.json");
+}
+
+function codexConfigPath(home = homeDir()) {
+  const configDir = process.env.CODEX_HOME?.trim() || path.join(home, ".codex");
+  return path.join(configDir, "config.toml");
+}
+
+function clientHomeCandidates(home = homeDir()) {
+  const candidates = [home];
+  // Electron can report a sandbox-specific home even though the coding-agent
+  // clients use the operating-system home. Keep isolated app/test homes fully
+  // isolated, but otherwise fall back to Node's view of the real user home.
+  if (!process.env.AGENT_RECALL_TEST_HOME && !process.env.AGENT_RECALL_HOME_DIR) {
+    candidates.push(os.homedir());
+  }
+  return [...new Set(candidates.filter(Boolean).map((candidate) => path.resolve(candidate)))];
+}
+
+function homeExecutableCandidates(clientId, home) {
+  const executable = clientId === "claude" ? "claude" : "codex";
+  const directories = [
+    path.join(home, ".local", "bin"),
+    path.join(home, ".npm-global", "bin"),
+    path.join(home, ".bun", "bin"),
+    path.join(home, "Library", "pnpm"),
+    path.join(home, "AppData", "Roaming", "npm"),
+  ];
+  const extensions = process.platform === "win32" ? [".cmd", ".exe", ".bat", ""] : [""];
+  return [...new Set(directories.flatMap((directory) => (
+    extensions.map((extension) => path.join(directory, `${executable}${extension}`))
+  )))];
+}
+
+function hasHomeClientEvidence(clientId, home) {
+  if (clientId === "claude") {
+    if (fs.existsSync(claudeConfigPath(home)) || fs.existsSync(path.join(home, ".claude"))) return true;
+  } else {
+    const configPath = codexConfigPath(home);
+    if (fs.existsSync(configPath) || fs.existsSync(path.dirname(configPath))) return true;
+  }
+  return homeExecutableCandidates(clientId, home).some((candidate) => fs.existsSync(candidate));
+}
+
+function pathExecutableDetected(clientId) {
+  const executable = clientId === "claude" ? "claude" : "codex";
+  const extensions = process.platform === "win32" ? [".cmd", ".exe", ".bat", ""] : [""];
+  return (process.env.PATH || "").split(path.delimiter).filter(Boolean).some((directory) => (
+    extensions.some((extension) => fs.existsSync(path.join(directory, `${executable}${extension}`)))
+  ));
+}
+
+function hasClientEvidence(clientId, home) {
+  return hasHomeClientEvidence(clientId, home) || pathExecutableDetected(clientId);
+}
+
+function resolveClientHome(clientId, home = homeDir()) {
+  const candidates = clientHomeCandidates(home);
+  return candidates.find((candidate) => hasHomeClientEvidence(clientId, candidate))
+    || candidates.at(-1)
+    || home;
 }
 
 function nodeMajor(version) {
@@ -164,25 +258,47 @@ function applyDshConfig(contents, scriptPath, remove, command = "node") {
 
 // --- Claude (~/.claude.json, JSON) -----------------------------------------
 
-function applyClaudeConfig(config, scriptPath, remove, command = "node") {
+function applyClaudeConfig(config, scriptPath, remove, command = "node", bridgePath) {
   const next = config && typeof config === "object" && !Array.isArray(config) ? { ...config } : {};
   const servers = next.mcpServers && typeof next.mcpServers === "object" ? { ...next.mcpServers } : {};
-  if (remove) {
-    delete servers[SERVER_NAME];
-  } else {
-    servers[SERVER_NAME] = { command, args: [scriptPath] };
+  delete servers[LEGACY_SERVER_NAME];
+  if (remove) delete servers[SERVER_NAME];
+  else {
+    servers[SERVER_NAME] = {
+      command,
+      args: [scriptPath],
+      ...(bridgePath ? { env: { AGENT_RECALL_MCP_BRIDGE: bridgePath } } : {}),
+    };
   }
   if (Object.keys(servers).length > 0) next.mcpServers = servers;
   else delete next.mcpServers;
   return next;
 }
 
+function applyClaudeSettings(settings, remove) {
+  const next = settings && typeof settings === "object" && !Array.isArray(settings) ? { ...settings } : {};
+  const permissions = next.permissions && typeof next.permissions === "object" && !Array.isArray(next.permissions)
+    ? { ...next.permissions }
+    : {};
+  const allow = Array.isArray(permissions.allow) ? [...permissions.allow] : [];
+  const retained = allow.filter((rule) => rule !== CLAUDE_PERMISSION && rule !== LEGACY_CLAUDE_PERMISSION);
+  if (!remove) retained.push(CLAUDE_PERMISSION);
+  if (retained.length > 0) permissions.allow = retained;
+  else delete permissions.allow;
+  if (Object.keys(permissions).length > 0) next.permissions = permissions;
+  else delete next.permissions;
+  return next;
+}
+
 // --- Codex (~/.codex/config.toml, TOML) ------------------------------------
 
-function applyCodexConfig(toml, scriptPath, remove, command = "node") {
+function applyCodexConfig(toml, scriptPath, remove, command = "node", bridgePath) {
   // JSON.stringify both values: TOML basic-string escapes (\\, \") match JSON, so
   // Windows paths with backslashes stay valid.
-  const block = `[${CODEX_SECTION}]\ncommand = ${JSON.stringify(command)}\nargs = [${JSON.stringify(scriptPath)}]\n`;
+  const environment = bridgePath
+    ? `env = { AGENT_RECALL_MCP_BRIDGE = ${JSON.stringify(bridgePath)} }\n`
+    : "";
+  const block = `[${CODEX_SECTION}]\ncommand = ${JSON.stringify(command)}\nargs = [${JSON.stringify(scriptPath)}]\n${environment}default_tools_approval_mode = "approve"\n`;
   const stripped = removeCodexBlock(toml);
   if (remove) return stripped;
   const base = stripped.trim();
@@ -194,7 +310,7 @@ function removeCodexBlock(toml) {
   const out = [];
   let skipping = false;
   for (const line of lines) {
-    if (line.trim() === `[${CODEX_SECTION}]`) {
+    if (line.trim() === `[${CODEX_SECTION}]` || line.trim() === `[${LEGACY_CODEX_SECTION}]`) {
       skipping = true;
       continue;
     }
@@ -218,74 +334,113 @@ function readJson(filePath) {
 function writeFileAtomic(filePath, contents) {
   const tmp = `${filePath}.${process.pid}.tmp`;
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  if (fs.existsSync(filePath)) fs.copyFileSync(filePath, `${filePath}.agentrecall-backup`);
   fs.writeFileSync(tmp, contents, "utf8");
   fs.renameSync(tmp, filePath);
 }
 
+function clientDetected(clientId, home = homeDir()) {
+  return hasClientEvidence(clientId, resolveClientHome(clientId, home));
+}
+
+function clientConfigured(clientId, home = homeDir()) {
+  home = resolveClientHome(clientId, home);
+  try {
+    if (clientId === "claude") {
+      const config = readJson(claudeConfigPath(home));
+      const settings = readJson(claudeSettingsPath(home));
+      return Boolean(config?.mcpServers?.[SERVER_NAME])
+        && Array.isArray(settings?.permissions?.allow)
+        && settings.permissions.allow.includes(CLAUDE_PERMISSION);
+    }
+    const configPath = codexConfigPath(home);
+    if (!fs.existsSync(configPath)) return false;
+    const lines = fs.readFileSync(configPath, "utf8").split("\n");
+    const sectionStart = lines.findIndex((line) => line.trim() === `[${CODEX_SECTION}]`);
+    if (sectionStart < 0) return false;
+    for (const line of lines.slice(sectionStart + 1)) {
+      if (/^\s*\[/.test(line)) break;
+      if (line.trim() === 'default_tools_approval_mode = "approve"') return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function setClientEnabled(clientId, enabled, options = {}) {
+  const home = resolveClientHome(clientId, options.homeDir || homeDir());
+  const scriptPath = serverScriptPath();
+  const bridgePath = gatewayDiscoveryPath(home);
+  const command = enabled ? nodeCommand() : "node";
+  if (clientId === "claude") {
+    const configPath = claudeConfigPath(home);
+    const settingsPath = claudeSettingsPath(home);
+    if (!enabled && !fs.existsSync(configPath) && !fs.existsSync(settingsPath)) return;
+    const current = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "";
+    const currentSettings = fs.existsSync(settingsPath) ? fs.readFileSync(settingsPath, "utf8") : "";
+    const config = fs.existsSync(configPath) || enabled
+      ? applyClaudeConfig(readJson(configPath), scriptPath, !enabled, command, bridgePath)
+      : undefined;
+    const settings = fs.existsSync(settingsPath) || enabled
+      ? applyClaudeSettings(readJson(settingsPath), !enabled)
+      : undefined;
+    if (config) {
+      const next = `${JSON.stringify(config, null, 2)}\n`;
+      if (current !== next) writeFileAtomic(configPath, next);
+    }
+    if (settings) {
+      const nextSettings = `${JSON.stringify(settings, null, 2)}\n`;
+      if (currentSettings !== nextSettings) writeFileAtomic(settingsPath, nextSettings);
+    }
+    return;
+  }
+  if (clientId === "codex") {
+    const configPath = codexConfigPath(home);
+    if (!enabled && !fs.existsSync(configPath)) return;
+    const current = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "";
+    const next = applyCodexConfig(current, scriptPath, !enabled, command, bridgePath);
+    const contents = next.endsWith("\n") ? next : `${next}\n`;
+    if (current !== contents) writeFileAtomic(configPath, contents);
+    return;
+  }
+  throw new Error(`Unsupported MCP client: ${clientId}`);
+}
+
+function clientConnections(preferences = { codex: true, claude: true }, home = homeDir()) {
+  return {
+    clients: [
+      { clientId: "codex", label: "Codex" },
+      { clientId: "claude", label: "Claude Code" },
+    ].map((client) => {
+      const clientHome = resolveClientHome(client.clientId, home);
+      return {
+        ...client,
+        configPath: client.clientId === "codex" ? codexConfigPath(clientHome) : claudeConfigPath(clientHome),
+        detected: hasClientEvidence(client.clientId, clientHome),
+        enabled: preferences[client.clientId] !== false,
+        configured: clientConfigured(client.clientId, clientHome),
+      };
+    }),
+  };
+}
+
 function run(remove, options = {}) {
   const home = options.homeDir || homeDir();
-  const scriptPath = serverScriptPath();
-  const command = remove ? "node" : nodeCommand();
   const messages = [];
-
-  const claudePath = path.join(home, ".claude.json");
-  if (!remove || fs.existsSync(claudePath)) {
-    const claudeConfig = applyClaudeConfig(readJson(claudePath), scriptPath, remove, command);
-    writeFileAtomic(claudePath, `${JSON.stringify(claudeConfig, null, 2)}\n`);
-    messages.push(`${remove ? "Removed" : "Configured"} MCP server in ${claudePath}`);
-  }
-
-  const codexDir = path.join(home, ".codex");
-  if (fs.existsSync(codexDir) && (!remove || fs.existsSync(path.join(codexDir, "config.toml")))) {
-    const codexPath = path.join(codexDir, "config.toml");
-    const current = fs.existsSync(codexPath) ? fs.readFileSync(codexPath, "utf8") : "";
-    const nextToml = applyCodexConfig(current, scriptPath, remove, command);
-    writeFileAtomic(codexPath, nextToml.endsWith("\n") ? nextToml : `${nextToml}\n`);
-    messages.push(`${remove ? "Removed" : "Configured"} MCP server in ${codexPath}`);
-  } else {
-    messages.push("Skipped Codex (~/.codex not found).");
-  }
-
-  // CodeBuddy uses ~/.codebuddy/mcp.json with the same { mcpServers } shape as Claude.
-  const codeBuddyDir = path.join(home, ".codebuddy");
-  if (fs.existsSync(codeBuddyDir) && (!remove || fs.existsSync(path.join(codeBuddyDir, "mcp.json")))) {
-    const codeBuddyPath = path.join(codeBuddyDir, "mcp.json");
-    const codeBuddyConfig = applyClaudeConfig(readJson(codeBuddyPath), scriptPath, remove, command);
-    writeFileAtomic(codeBuddyPath, `${JSON.stringify(codeBuddyConfig, null, 2)}\n`);
-    messages.push(`${remove ? "Removed" : "Configured"} MCP server in ${codeBuddyPath}`);
-  } else {
-    messages.push("Skipped CodeBuddy (~/.codebuddy not found).");
-  }
-
-  // DeepSeek Harness reads its home-level patch layer ~/.dsh/cordis.patch.yml
-  // (applied over every profile). Register there when the harness is present.
-  // Wrapped separately so a dsh failure never blocks the other registrations.
-  const dshHome = process.env.DSH_HOME?.trim() || path.join(home, ".dsh");
-  if (fs.existsSync(dshHome) && (!remove || fs.existsSync(path.join(dshHome, "cordis.patch.yml")))) {
-    try {
-      const dshPatchPath = path.join(dshHome, "cordis.patch.yml");
-      const current = fs.existsSync(dshPatchPath) ? fs.readFileSync(dshPatchPath, "utf8") : "";
-      const next = applyDshConfig(current, scriptPath, remove, command);
-      writeFileAtomic(dshPatchPath, next);
-      messages.push(`${remove ? "Removed" : "Configured"} MCP server in ${dshPatchPath}`);
-    } catch (error) {
-      messages.push(`Failed to configure DeepSeek Harness MCP (${error instanceof Error ? error.message : String(error)}).`);
+  for (const clientId of ["claude", "codex"]) {
+    if (!remove && !clientDetected(clientId, home)) {
+      messages.push(`Skipped ${clientId} (not detected).`);
+      continue;
     }
-  } else {
-    messages.push("Skipped DeepSeek Harness (~/.dsh not found).");
+    setClientEnabled(clientId, !remove, { homeDir: home });
+    messages.push(`${remove ? "Removed" : "Configured"} AgentRecall Gateway for ${clientId}.`);
   }
-
-  if (!remove) messages.push(`Using node: ${command}`);
   return messages;
 }
 
 function status(home = homeDir()) {
-  try {
-    const claude = readJson(path.join(home, ".claude.json"));
-    return Boolean(claude && claude.mcpServers && claude.mcpServers[SERVER_NAME]);
-  } catch {
-    return false;
-  }
+  return clientConfigured("claude", home) || clientConfigured("codex", home);
 }
 
 // The launch command used when running the packaged MCP server, resolved from
@@ -297,14 +452,28 @@ function serverDefinition() {
     name: "agent-recall-v2",
     transport: "stdio",
     command: nodeCommand(),
-    args: [serverScriptPath()],
+    args: [sessionSearchScriptPath()],
     env: {},
     createdAt: 0,
     updatedAt: 0,
   };
 }
 
-module.exports = { applyClaudeConfig, applyCodexConfig, applyDshConfig, removeCodexBlock, removeDshBlock, run, serverDefinition, status };
+module.exports = {
+  applyClaudeConfig,
+  applyClaudeSettings,
+  applyCodexConfig,
+  applyDshConfig,
+  clientConnections,
+  clientConfigured,
+  gatewayDiscoveryPath,
+  removeCodexBlock,
+  removeDshBlock,
+  run,
+  serverDefinition,
+  setClientEnabled,
+  status,
+};
 
 if (require.main === module) {
   const remove = process.argv.includes("uninstall") || process.argv.includes("--remove");

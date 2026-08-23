@@ -32,9 +32,9 @@ import type {
   StopWorkflowRunRequest,
   SubmitWorkflowScriptInputRequest,
   UpdateWorkflowRequest,
+  McpExternalClientUpdate,
   McpServerDefinition,
 } from "../../automation/contracts";
-import type { McpInstallRequest } from "../../automation/engine/shared/mcp-config";
 import type { WorkflowDefinition } from "../../automation/engine/shared/workflow/model";
 import { loadClaudeDefaultConfig, loadCodexDefaultConfig } from "../../automation/engine/main/channels/model-config";
 import { AUTOMATION_CHANNELS } from "../../shared/ipc/automation";
@@ -164,12 +164,10 @@ const workflowInterventionSchema = workflowNodeSchema.extend({
 }).passthrough();
 const workflowScriptInputSchema = workflowNodeSchema.extend({ values: z.record(z.string(), z.unknown()) }).passthrough();
 const workflowDraftReplySchema = workflowIdSchema.extend({ reply: z.string().trim().min(1).max(200_000) }).passthrough();
-const mcpInstallSchema = z.object({
-  agentId: idSchema,
-  catalogId: idSchema,
-  allowedPath: pathSchema.optional(),
-  token: z.string().max(20_000).optional(),
-});
+const mcpExternalClientUpdateSchema = z.object({
+  clientId: z.enum(["codex", "claude"]),
+  enabled: z.boolean(),
+}).strict();
 const workflowRecoverySchema = workflowStopSchema.extend({
   action: z.enum(["continue", "rollback_savepoint", "compensate_all", "keep_state", "abandon"]),
   actor: z.string().trim().min(1).max(256),
@@ -313,11 +311,9 @@ export function registerAutomationIpc({
     service.mcp.test(mcpServerSchema.parse(value) as McpServerDefinition));
   ready(AUTOMATION_CHANNELS.mcpDelete, (value: unknown) =>
     service.mcp.delete(idSchema.parse(value)));
-  ready(AUTOMATION_CHANNELS.mcpSetupStatus, () => service.mcp.setupStatus());
-  ready(AUTOMATION_CHANNELS.mcpInstalledList, () => service.mcp.listInstalled());
-  ready(AUTOMATION_CHANNELS.mcpAgentList, (value: unknown) => service.mcp.listForAgent(idSchema.parse(value)));
-  ready(AUTOMATION_CHANNELS.mcpAgentInstall, (value: unknown) => service.mcp.install(mcpInstallSchema.parse(value) as McpInstallRequest));
-  ready(AUTOMATION_CHANNELS.mcpAgentUninstall, (value: unknown) => service.mcp.uninstall(mcpInstallSchema.parse(value) as McpInstallRequest));
+  ready(AUTOMATION_CHANNELS.mcpClientConnections, () => service.mcp.clientConnections());
+  ready(AUTOMATION_CHANNELS.mcpClientSet, (value: unknown) =>
+    service.mcp.setClientConnection(mcpExternalClientUpdateSchema.parse(value) as McpExternalClientUpdate));
 
   ready(AUTOMATION_CHANNELS.evaluationDatasetList, () => service.evaluations.listDatasets());
   ready(AUTOMATION_CHANNELS.evaluationDatasetSave, (value: unknown) =>

@@ -1517,6 +1517,41 @@
   color: var(--text-faint);
 }
 
+.mcp-gateway-overview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--accent-soft) 34%, var(--panel-bg));
+}
+
+.mcp-gateway-overview > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border-subtle));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel-bg) 86%, transparent);
+}
+
+.mcp-gateway-overview span {
+  color: var(--text-faint);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.mcp-gateway-overview strong {
+  overflow: hidden;
+  color: var(--text-dim);
+  font: 10px/1.45 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .mcp-tool-table td { vertical-align: middle; }
 
 .mcp-tool-table tr.is-disabled td {
@@ -1532,6 +1567,22 @@
   width: 44px;
   text-align: right;
   white-space: nowrap;
+}
+
+.mcp-exposure-badge {
+  display: inline-flex;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--panel-subtle);
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.mcp-exposure-badge.is-direct {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 /*
@@ -1634,6 +1685,16 @@
 
 .mcp-modal-title strong { font-size: 13px; color: var(--text); }
 
+.mcp-modal-title > div {
+  display: grid;
+  gap: 2px;
+}
+
+.mcp-modal-title small {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
 .mcp-tool-state {
   padding: 2px 8px;
   border-radius: 999px;
@@ -1717,6 +1778,44 @@
   gap: 8px;
   padding: 12px 16px;
   border-top: 1px solid var(--line);
+}
+
+.mcp-modal-footer > p {
+  margin: 0 auto 0 0;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.mcp-client-list { gap: 8px; }
+
+.mcp-client-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--panel-subtle);
+}
+
+.mcp-client-state { color: var(--warning); }
+.mcp-client-state.is-connected { color: var(--success-text); }
+
+.mcp-client-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.mcp-client-copy strong { color: var(--text); font-size: 11px; }
+.mcp-client-copy small { color: var(--text-muted); font-size: 10px; }
+.mcp-client-copy code {
+  overflow: hidden;
+  color: var(--text-faint);
+  font: 9px var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .automation-evaluation-page > .evaluation-workbench {
@@ -2223,4 +2322,8 @@
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
   background: var(--panel-subtle);
+}
+
+@media (max-width: 760px) {
+  .mcp-gateway-overview { grid-template-columns: minmax(0, 1fr); }
 }

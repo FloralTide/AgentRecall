@@ -15,9 +15,9 @@ import {
 import {
   startMcpBridge,
   type McpBridgeServer,
+  type StartMcpBridgeOptions,
 } from "../../automation/engine/main/bridges/mcp-bridge";
 import { McpRegistryStore } from "../../automation/engine/main/mcp-registry-store";
-import { McpAgentManagementService } from "../../automation/engine/main/mcp/agent-management-service";
 import {
   BuiltinWorkflowMcpServer,
   type BuiltinSessionSearchServer,
@@ -39,7 +39,6 @@ import {
   type BundledWorkflowDefinition,
   type BundledWorkflowSummary,
 } from "../../automation/engine/main/workflows/bundled-workflows";
-import { workflowMcpToolDecision } from "../../automation/engine/shared/workflow-mcp-policy";
 import {
   AUTOMATION_CHANGE_PROTOCOL_VERSION,
   type AutomationChange,
@@ -61,6 +60,13 @@ import {
   type WorkflowPortableFileSelection,
 } from "./workflow-portable-service";
 import { parseWorkflowAgentOutputs, WorkflowCoreService } from "./workflow-core-service";
+import type {
+  McpExternalClientConnections,
+  McpExternalClientUpdate,
+  McpGatewayCallRequest,
+  McpGatewayGetRequest,
+  McpGatewaySearchRequest,
+} from "../../automation/engine/shared/mcp/types";
 
 export interface AutomationServiceOptions {
   database: PostgresDatabase;
@@ -69,6 +75,11 @@ export interface AutomationServiceOptions {
   appDataPath: string;
   bundledWorkflowsPath: string;
   workflowMcpServerPath: string;
+  mcpClients?: {
+    snapshot(): McpExternalClientConnections;
+    setEnabled(request: McpExternalClientUpdate): McpExternalClientConnections;
+  };
+  gatewayDirect?: Pick<NonNullable<StartMcpBridgeOptions["gateway"]>, "listSkills" | "getSkill" | "searchSessions" | "getSession">;
   builtinSessionSearch?: BuiltinSessionSearchServer;
   builtinSkills?: BuiltinSkillMcpServer;
   workflowMcp?: {
@@ -89,7 +100,6 @@ export interface AutomationServiceOptions {
 interface AutomationServiceDependencies {
   hub?: AgentHub;
   registry?: McpRegistryStore;
-  agents?: McpAgentManagementService;
   evaluations?: EvaluationService;
   teamChats?: TeamChatService;
   workflowCore?: WorkflowCoreService;
@@ -250,12 +260,12 @@ export class NativeAutomationService {
   private readonly appStore: PostgresAppStore;
   private readonly configuredAgentExecutor: ConfiguredAgentExecutionService;
   private readonly registryInstance: McpRegistryStore;
-  private readonly agentsInstance: McpAgentManagementService;
   private readonly loadWorkflows: (rootPath: string) => Promise<BundledWorkflowDefinition[]>;
   private readonly loadWorkflowSummaries: (rootPath: string) => Promise<BundledWorkflowSummary[]>;
   private readonly startBridgeService: typeof startMcpBridge;
   private readonly startRouterService: typeof startCodexChatRouter;
   private readonly setRouterBaseUrl: typeof setCodexChatRouterBaseUrl;
+  private readonly workflowBuiltin: BuiltinWorkflowMcpServer | undefined;
   private readonly listeners = new Set<SnapshotListener>();
   private readonly changeListeners = new Set<ChangeListener>();
   private readonly workflowRunStreamListeners = new Set<WorkflowRunStreamListener>();
@@ -340,17 +350,6 @@ export class NativeAutomationService {
       configuredAgents: () => this.hubInstance.snapshot().configuredAgents,
       executeAgent: (input, onEvent, signal) => this.configuredAgentExecutor.runConversation(input, onEvent, signal),
     });
-    this.agentsInstance = dependencies.agents ?? new McpAgentManagementService({
-      homeDir: () => options.homePath,
-      appDataDir: () => options.appDataPath,
-      workDir: () => this.hubInstance.getWorkDir(),
-      serverPath: () => options.workflowMcpServerPath,
-      bridgePath: () => this.bridge?.discoveryPath ?? this.paths.discoveryPath,
-      bridgeRunning: () => Boolean(this.bridge),
-      workflowCreateAvailable: () => workflowMcpToolDecision("planning", "workflow_create") === "allow",
-      runtimeForAgent: (agentId) => this.hubInstance.snapshot().configuredAgents
-        .find((agent) => agent.id === agentId)?.runtimeAgentId,
-    });
     this.runtime = this.hubInstance;
     this.workflows = this.hubInstance;
     this.portableWorkflows = new WorkflowPortableService({
@@ -365,22 +364,10 @@ export class NativeAutomationService {
         throw new Error("Workflow export writer is unavailable.");
       }),
     });
-    const workflowBuiltin = options.workflowMcp
+    this.workflowBuiltin = options.workflowMcp
       ? new BuiltinWorkflowMcpServer({
           isEnabled: () => options.workflowMcp!.isEnabled(),
-          setEnabled: async (next) => {
-            const codexAgents = this.hubInstance.snapshot().configuredAgents.filter(
-              (agent) => agent.runtimeAgentId === "codex",
-            );
-            for (const agent of codexAgents) {
-              if (next) {
-                await this.agentsInstance.install({ agentId: agent.id, catalogId: "workflow" });
-              } else {
-                await this.agentsInstance.uninstall({ agentId: agent.id, catalogId: "workflow" });
-              }
-            }
-            return options.workflowMcp!.setEnabled(next);
-          },
+          setEnabled: (next) => options.workflowMcp!.setEnabled(next),
           launchConfig: () => ({
             id: "agent-recall-workflow",
             name: "AgentRecall Workflow",
@@ -390,6 +377,10 @@ export class NativeAutomationService {
           }),
           testEnv: () => ({
             AGENT_RECALL_WORKFLOW_MCP_BRIDGE: this.bridge?.discoveryPath ?? this.paths.discoveryPath,
+            ...(this.bridge ? {
+              AGENT_RECALL_WORKFLOW_MCP_TOKEN: this.bridge.token,
+              AGENT_RECALL_WORKFLOW_MCP_SCOPE: "planning",
+            } : {}),
           }),
           hubBindable: false,
           readRuntime: () => options.workflowMcp!.readRuntime(),
@@ -398,9 +389,9 @@ export class NativeAutomationService {
       : undefined;
     this.mcp = new McpAutomationModule({
       registry: this.registryInstance,
-      agents: this.agentsInstance,
       runtime: this.hubInstance,
-      builtins: [options.builtinSessionSearch, options.builtinSkills, workflowBuiltin]
+      ...(options.mcpClients ? { clients: options.mcpClients } : {}),
+      builtins: [options.builtinSessionSearch, options.builtinSkills, this.workflowBuiltin]
         .filter((item): item is NonNullable<typeof item> => Boolean(item)) as ManagedMcp[],
     });
     this.currentSnapshot = this.hubInstance.snapshot();
@@ -528,15 +519,47 @@ export class NativeAutomationService {
       discoveryPath: this.paths.discoveryPath,
       bundledSkillsRoot: this.paths.bundledSkillsPath,
       updateConfiguredAgents: (agents) => this.updateConfiguredAgents(agents),
+      gateway: {
+        searchTools: (body) => this.mcp.searchGatewayTools(gatewaySearchRequest(body)),
+        getTool: (body) => this.mcp.getGatewayTool(gatewayGetRequest(body)),
+        callTool: (body) => this.mcp.callGatewayTool(gatewayCallRequest(body)),
+        listSkills: async (body) => {
+          await this.mcp.assertGatewayDirectToolEnabled("agent-recall-skills", "list_skills");
+          return this.options.gatewayDirect?.listSkills(body) ?? { ok: false, error: "Skill Gateway is unavailable." };
+        },
+        getSkill: async (body) => {
+          await this.mcp.assertGatewayDirectToolEnabled("agent-recall-skills", "get_skill");
+          return this.options.gatewayDirect?.getSkill(body) ?? { ok: false, error: "Skill Gateway is unavailable." };
+        },
+        searchSessions: async (body) => {
+          await this.mcp.assertGatewayDirectToolEnabled("agent-recall-session-search", "search_sessions");
+          return this.options.gatewayDirect?.searchSessions(body) ?? { ok: false, error: "Session Gateway is unavailable." };
+        },
+        getSession: async (body) => {
+          await this.mcp.assertGatewayDirectToolEnabled("agent-recall-session-search", "get_session");
+          return this.options.gatewayDirect?.getSession(body) ?? { ok: false, error: "Session Gateway is unavailable." };
+        },
+      },
       studio: {
         handleMcpRequest: (token, route, body) =>
           this.teamChat.handleMcpRequest(token, route, body),
       },
     });
+    await this.refreshWorkflowGatewayCatalog();
     this.hubInstance.setWorkflowMcpDiscoveryPath(this.bridge.discoveryPath);
     this.hubInstance.setWorkflowMcpManagedToken(this.bridge.token);
     await this.hubInstance.initialize();
     void this.teamChat.connect().catch(() => undefined);
+  }
+
+  private async refreshWorkflowGatewayCatalog(): Promise<void> {
+    if (!this.workflowBuiltin) return;
+    const current = await this.workflowBuiltin.resolve();
+    // Older and fresh caches contain only the standalone read catalog (or no
+    // tools). Refresh once so the Gateway index gains the planning tools while
+    // retaining the user's per-tool enable choices.
+    if (current.tools.some((tool) => tool.name === "workflow_create")) return;
+    await this.mcp.test(current);
   }
 
   async requirePrepared(): Promise<void> {
@@ -709,4 +732,31 @@ export class NativeAutomationService {
     this.workflowRunStreamListeners.clear();
     this.healthState = { state: "stopped" };
   }
+}
+
+function gatewayRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Gateway arguments must be an object.");
+  return value as Record<string, unknown>;
+}
+
+function gatewaySearchRequest(value: unknown): McpGatewaySearchRequest {
+  const record = gatewayRecord(value);
+  const request: McpGatewaySearchRequest = {};
+  if (typeof record.sourceId === "string" && record.sourceId.trim()) request.sourceId = record.sourceId.trim();
+  if (typeof record.limit === "number" && Number.isFinite(record.limit)) request.limit = record.limit;
+  if (typeof record.cursor === "string" && record.cursor.trim()) request.cursor = record.cursor.trim();
+  return request;
+}
+
+function gatewayGetRequest(value: unknown): McpGatewayGetRequest {
+  const record = gatewayRecord(value);
+  if (typeof record.toolRef !== "string" || !record.toolRef.trim()) throw new Error("toolRef is required.");
+  return { toolRef: record.toolRef.trim() };
+}
+
+function gatewayCallRequest(value: unknown): McpGatewayCallRequest {
+  const record = gatewayRecord(value);
+  const request: McpGatewayCallRequest = gatewayGetRequest(record);
+  if (record.arguments !== undefined) request.arguments = gatewayRecord(record.arguments);
+  return request;
 }

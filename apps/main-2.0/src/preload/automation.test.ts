@@ -29,6 +29,16 @@ describe("createAutomationApi", () => {
     expect(ipc.invoke).toHaveBeenCalledWith(AUTOMATION_CHANNELS.runtimeDeleteAgent, "agent-1");
   });
 
+  it("updates one external MCP client connection through its dedicated channel", async () => {
+    const ipc = { invoke: vi.fn(async () => ({ clients: [] })), on: vi.fn(), removeListener: vi.fn() };
+    const api = createAutomationApi(ipc as never);
+    const request = { clientId: "codex" as const, enabled: true };
+
+    await api.setMcpClientConnection(request);
+
+    expect(ipc.invoke).toHaveBeenCalledWith(AUTOMATION_CHANNELS.mcpClientSet, request);
+  });
+
   it("loads the lightweight Workflow sidebar through its own channel", async () => {
     const ipc = { invoke: vi.fn(async () => ({ workflows: [] })), on: vi.fn(), removeListener: vi.fn() };
     const api = createAutomationApi(ipc as never);

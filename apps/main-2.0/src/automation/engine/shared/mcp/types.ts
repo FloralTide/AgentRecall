@@ -55,3 +55,55 @@ export interface AgentMcpBinding {
   serverId: string;
   toolAllowlist: string[];
 }
+
+export type McpExternalClientId = "codex" | "claude";
+
+export interface McpExternalClientConnection {
+  clientId: McpExternalClientId;
+  label: string;
+  detected: boolean;
+  enabled: boolean;
+  configured: boolean;
+  configPath: string;
+  error?: string;
+}
+
+export interface McpExternalClientConnections {
+  clients: McpExternalClientConnection[];
+}
+
+export interface McpExternalClientUpdate {
+  clientId: McpExternalClientId;
+  enabled: boolean;
+}
+
+export interface McpGatewaySearchRequest {
+  sourceId?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface McpGatewayToolSummary {
+  toolRef: string;
+  sourceId: string;
+  sourceName: string;
+  name: string;
+  description?: string;
+}
+
+export interface McpGatewaySearchResult {
+  items: McpGatewayToolSummary[];
+  nextCursor?: string;
+}
+
+export interface McpGatewayToolDetail extends McpGatewayToolSummary {
+  inputSchema: Record<string, unknown>;
+}
+
+export interface McpGatewayGetRequest {
+  toolRef: string;
+}
+
+export interface McpGatewayCallRequest extends McpGatewayGetRequest {
+  arguments?: Record<string, unknown>;
+}
