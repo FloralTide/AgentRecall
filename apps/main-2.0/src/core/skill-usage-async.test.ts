@@ -51,6 +51,7 @@ describe("asynchronous skill usage refresh", () => {
       const sessionPath = path.join(homeDir, ".codex", "sessions", "2026", "08", "rollout.jsonl");
       const skillPath = "/tmp/.codex/skills/paged-read/SKILL.md";
       const completionOnlyPath = "/tmp/.codex/skills/paged-only/SKILL.md";
+      const failedPath = "/tmp/.codex/skills/paged-failed/SKILL.md";
       writeJsonl(sessionPath, [
         {
           type: "session_meta",
@@ -99,6 +100,22 @@ describe("asynchronous skill usage refresh", () => {
             },
           },
         },
+        {
+          type: "event_msg",
+          timestamp: "2026-08-04T00:00:04.000Z",
+          payload: {
+            type: "item_completed",
+            turn_id: "turn-1",
+            item: {
+              type: "CommandExecution",
+              id: "cmd-3",
+              command: ["cat", failedPath],
+              cwd: "/repo",
+              status: "failed",
+              exit_code: 1,
+            },
+          },
+        },
       ]);
 
       const sources = await listSkillUsageSourcesAsync({ homeDir, codexSessionsDir: path.dirname(sessionPath) });
@@ -108,6 +125,9 @@ describe("asynchronous skill usage refresh", () => {
       expect(events).toEqual(expect.arrayContaining([
         expect.objectContaining({ agent: "codex", skill: "paged-read", sessionId: "s-1", cwd: "/repo" }),
         expect.objectContaining({ agent: "codex", skill: "paged-only", sessionId: "s-1", cwd: "/repo" }),
+      ]));
+      expect(events).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ skill: "paged-failed" }),
       ]));
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });

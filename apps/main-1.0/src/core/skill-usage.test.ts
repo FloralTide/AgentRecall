@@ -239,6 +239,7 @@ describe("skill usage", () => {
     const sessionsDir = path.join(homeDir, "codex-fixture", "sessions");
     const skillPath = "/tmp/.codex/skills/paged-read/SKILL.md";
     const completionOnlyPath = "/tmp/.codex/skills/paged-only/SKILL.md";
+    const failedPath = "/tmp/.codex/skills/paged-failed/SKILL.md";
     writeJsonl(path.join(sessionsDir, "rollout.jsonl"), [
       {
         type: "session_meta",
@@ -304,12 +305,29 @@ describe("skill usage", () => {
           },
         },
       },
+      {
+        type: "event_msg",
+        timestamp: "2026-06-01T10:03:00.000Z",
+        payload: {
+          type: "item_completed",
+          turn_id: "turn-1",
+          item: {
+            type: "CommandExecution",
+            id: "cmd-3",
+            command: ["cat", failedPath],
+            cwd: "/repo",
+            status: "failed",
+            exit_code: 1,
+          },
+        },
+      },
     ]);
 
     const snapshot = loadSkillUsage({ homeDir, codexSessionsDir: sessionsDir });
     expect(snapshot.totalEvents).toBe(2);
     expect(usageForSkill(snapshot, "paged-read", "codex")?.count).toBe(1);
     expect(usageForSkill(snapshot, "paged-only", "codex")?.count).toBe(1);
+    expect(usageForSkill(snapshot, "paged-failed", "codex")).toBeNull();
   }));
 
   it("honors optional source settings and parses Qoder structured calls", () => withTempHome((homeDir) => {

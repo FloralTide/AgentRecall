@@ -535,15 +535,17 @@ function codexSessionUsageEvents(
   const defaultOwner = source.provider === "codex" || source.provider === "tcodex"
     ? "codex"
     : undefined;
-  return extractCodexStructuredToolCalls(rows).flatMap((call) => usageEventsFromToolCall(
+  return extractCodexStructuredToolCalls(rows)
+    .filter((call) => call.status !== "failed" && call.status !== "declined")
+    .flatMap((call) => usageEventsFromToolCall(
     { name: call.canonicalName, input: unwrapCodexExecInput(call.input) },
     Math.min(...call.evidence.map((item) => item.timestamp)),
     defaultOwner,
-  ).map((event) => ({
-    ...event,
-    ...(context.sessionId ? { sessionId: context.sessionId } : {}),
-    ...(context.cwd ? { cwd: context.cwd } : {}),
-  })));
+    ).map((event) => ({
+      ...event,
+      ...(context.sessionId ? { sessionId: context.sessionId } : {}),
+      ...(context.cwd ? { cwd: context.cwd } : {}),
+    })));
 }
 
 function parseUsageRecordLine(line: string): Record<string, unknown> | null {

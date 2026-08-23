@@ -387,11 +387,13 @@ function codexSessionUsageEvents(rows: readonly unknown[], source: SkillUsageSou
   const defaultOwner = source.provider === "codex" || source.provider === "tcodex"
     ? "codex"
     : undefined;
-  return extractCodexStructuredToolCalls(rows).flatMap((call) => usageEventsFromToolCall(
+  return extractCodexStructuredToolCalls(rows)
+    .filter((call) => call.status !== "failed" && call.status !== "declined")
+    .flatMap((call) => usageEventsFromToolCall(
     { name: call.canonicalName, input: call.input },
     Math.min(...call.evidence.map((item) => item.timestamp)),
     defaultOwner,
-  ));
+    ));
 }
 
 function parseUsageRecordLine(line: string): Record<string, unknown> | null {
