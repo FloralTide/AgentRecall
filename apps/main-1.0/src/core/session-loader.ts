@@ -2003,27 +2003,34 @@ function qwenTraceEvents(rows: Record<string, unknown>[]): SessionTraceEvent[] {
 function loadQwenCodeSessionFile(filePath: string, projectPath: string, stat: VirtualSessionFileStat): LoadedSession | null {
   const parsedRows = qwenJsonlRows(filePath).filter(isRecord);
   const records = new Map<string, Record<string, unknown>>();
+  let chainInvalid = false;
   for (const row of parsedRows) {
     const uuid = stringField(row, "uuid");
-    if (uuid) records.set(uuid, row);
+    if (!uuid) continue;
+    if (records.has(uuid)) chainInvalid = true;
+    records.set(uuid, row);
   }
-  const leaf = [...records.values()].reverse().find((row) => row.type === "user" || row.type === "assistant" || row.type === "tool_result");
+  const leaf = [...parsedRows].reverse().find((row) => row.type === "user" || row.type === "assistant" || row.type === "tool_result");
   if (!leaf) return null;
   const chain: Record<string, unknown>[] = [];
   const visited = new Set<string>();
   let current: Record<string, unknown> | undefined = leaf;
   while (current) {
     const uuid = stringField(current, "uuid");
-    if (!uuid || visited.has(uuid)) break;
+    if (!uuid || visited.has(uuid)) { chainInvalid = true; break; }
     visited.add(uuid); chain.push(current);
-    const parent = stringField(current, "parentUuid");
-    current = parent ? records.get(parent) : undefined;
+    const parentValue = unknownField(current, "parentUuid");
+    if (parentValue === null || parentValue === undefined || parentValue === "") { current = undefined; continue; }
+    if (typeof parentValue !== "string") { chainInvalid = true; break; }
+    const parent = parentValue;
+    current = records.get(parent);
+    if (!current) chainInvalid = true;
   }
-  chain.reverse();
-  const messages = sourceMessages(chain, "qwen");
+  const activeRows = chainInvalid ? parsedRows : chain.reverse();
+  const messages = sourceMessages(activeRows, "qwen");
   if (!messages.length) return null;
   const usageEvents: TokenUsageEvent[] = [];
-  for (const row of chain) {
+  for (const row of activeRows) {
     const usage = objectField(row, "usageMetadata");
     if (!usage) continue;
     const cachedInputTokens = numberField(usage, "cachedContentTokenCount");
@@ -2036,8 +2043,8 @@ function loadQwenCodeSessionFile(filePath: string, projectPath: string, stat: Vi
   const firstQuestionText = cleanTitle(firstQuestion(messages));
   const titleRecord = parsedRows.find((row) => row.subtype === "custom_title");
   const title = stringField(objectField(titleRecord, "systemPayload"), "customTitle") || firstQuestionText || rawId;
-  const chainTimestamp = chain.map((row) => timestampMs(row.timestamp)).find((timestamp) => timestamp > 0) || stat.mtimeMs;
-  return { session: createIndexedSession({ keyPrefix: "qwen", rawId, source: "qwen-code", projectPath: stringField(leaf, "cwd") || projectPath, filePath, originalTitle: title, firstQuestion: firstQuestionText, timestamp: chainTimestamp, tokenUsage: tokenUsageFromEvents(usageEvents), stat }), messages, tokenEvents: usageEvents, traceEvents: qwenTraceEvents(chain) };
+  const chainTimestamp = activeRows.map((row) => timestampMs(row.timestamp)).find((timestamp) => timestamp > 0) || stat.mtimeMs;
+  return { session: createIndexedSession({ keyPrefix: "qwen", rawId, source: "qwen-code", projectPath: stringField(leaf, "cwd") || projectPath, filePath, originalTitle: title, firstQuestion: firstQuestionText, timestamp: chainTimestamp, tokenUsage: tokenUsageFromEvents(usageEvents), stat }), messages, tokenEvents: usageEvents, traceEvents: qwenTraceEvents(activeRows) };
 }
 
 function* loadQwenCodeSessionsIterator(root: string, options: SessionLoadOptions): Generator<LoadedSession> {
