@@ -69,4 +69,27 @@ describe("Qwen Code sessions", () => {
     expect(loaded.filter((item) => item.session.source === "qwen-code")).toEqual([]);
     expect(onSkippedFile).toHaveBeenCalledWith(activePath, expect.any(Object));
   });
+
+  it("normalizes numeric second and millisecond timestamps across Qwen records", () => {
+    const root = fixture(); const chats = path.join(root, ".qwen", "projects", "project", "chats"); fs.mkdirSync(chats, { recursive: true });
+    const userSeconds = 1787443200; const assistantMilliseconds = userSeconds * 1000 + 1000; const toolMilliseconds = assistantMilliseconds + 1000;
+    const user = record("u", null, "user", "question", { timestamp: userSeconds });
+    const assistant = record("a", "u", "assistant", "answer", {
+      timestamp: assistantMilliseconds,
+      usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 3 },
+      message: { parts: [{ text: "answer" }, { functionCall: { name: "read_file", id: "call-1" } }] },
+    });
+    const tool = { uuid: "t", parentUuid: "a", sessionId: "qwen-1", timestamp: toolMilliseconds, type: "tool_result", cwd: "C:/repo", message: { role: "user", parts: [] }, toolCallResult: { output: "done" } };
+    fs.writeFileSync(path.join(chats, "numeric.jsonl"), `${JSON.stringify(user)}\n${JSON.stringify(assistant)}\n${JSON.stringify(tool)}\n`);
+
+    const [loaded] = loadDefaultSessions({ homeDir: root, includeQwenCode: true });
+    expect(loaded.session.timestamp).toBe(userSeconds * 1000);
+    expect(loaded.messages.map((message) => message.timestamp)).toEqual([
+      new Date(userSeconds * 1000).toISOString(),
+      new Date(assistantMilliseconds).toISOString(),
+    ]);
+    expect(loaded.tokenEvents?.[0]).toMatchObject({ timestamp: assistantMilliseconds, dedupeKey: "a" });
+    expect(loaded.traceEvents?.find((event) => event.eventType === "qwen.functionCall")).toMatchObject({ timestamp: new Date(assistantMilliseconds).toISOString() });
+    expect(loaded.traceEvents?.find((event) => event.eventType === "qwen.tool_result")).toMatchObject({ timestamp: new Date(toolMilliseconds).toISOString() });
+  });
 });

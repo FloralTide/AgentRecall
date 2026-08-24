@@ -669,10 +669,10 @@ function qwenTraces(rows: Record<string, unknown>[]): SessionTraceEvent[] {
       if (!isRecord(part)) continue;
       const call = objectField(part, "functionCall"); const result = objectField(part, "functionResponse");
       if (!call && !result && part.thought !== true) continue;
-      events.push({ kind: call ? "tool_call" : result ? "tool_result" : "event", source: "qwen", title: call ? `function: ${stringField(call, "name") || "call"}` : result ? `function result: ${stringField(result, "name") || "result"}` : "reasoning", detail: stringifyDetail(call || result || part), timestamp: stringField(row, "timestamp"), callId: stringField(call || result, "id") || null, eventType: call ? "qwen.functionCall" : result ? "qwen.functionResponse" : "qwen.thought", status: call ? "running" : result ? "completed" : "unknown" });
+      events.push({ kind: call ? "tool_call" : result ? "tool_result" : "event", source: "qwen", title: call ? `function: ${stringField(call, "name") || "call"}` : result ? `function result: ${stringField(result, "name") || "result"}` : "reasoning", detail: stringifyDetail(call || result || part), timestamp: timestampString(unknownField(row, "timestamp")), callId: stringField(call || result, "id") || null, eventType: call ? "qwen.functionCall" : result ? "qwen.functionResponse" : "qwen.thought", status: call ? "running" : result ? "completed" : "unknown" });
     }
     if (row.type === "tool_result") {
-      events.push({ kind: "tool_result", source: "qwen", title: "tool result", detail: stringifyDetail(row.toolCallResult || row.message || row), timestamp: stringField(row, "timestamp"), callId: stringField(row, "uuid") || null, eventType: "qwen.tool_result", status: "completed" });
+      events.push({ kind: "tool_result", source: "qwen", title: "tool result", detail: stringifyDetail(row.toolCallResult || row.message || row), timestamp: timestampString(unknownField(row, "timestamp")), callId: stringField(row, "uuid") || null, eventType: "qwen.tool_result", status: "completed" });
     }
   }
   return dedupeTraceEvents(events);
@@ -687,11 +687,11 @@ function loadQwenFile(filePath: string, projectPath: string, stat = safeStat(fil
   chain.reverse(); const messages = sourceMessages(chain, "qwen");
   if (!messages.length) return null;
   const tokenEvents: TokenUsageEvent[] = [];
-  for (const row of chain) { const usage = objectField(row, "usageMetadata"); if (!usage) continue; const cachedInputTokens = numberField(usage, "cachedContentTokenCount"); const inputTokens = Math.max(0, numberField(usage, "promptTokenCount") - cachedInputTokens); const outputTokens = numberField(usage, "candidatesTokenCount"); const reasoningOutputTokens = numberField(usage, "thoughtsTokenCount"); tokenEvents.push({ timestamp: Date.parse(stringField(row, "timestamp")) || 0, dedupeKey: stringField(row, "uuid"), inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens, totalTokens: inputTokens + outputTokens + cachedInputTokens + reasoningOutputTokens }); }
+  for (const row of chain) { const usage = objectField(row, "usageMetadata"); if (!usage) continue; const cachedInputTokens = numberField(usage, "cachedContentTokenCount"); const inputTokens = Math.max(0, numberField(usage, "promptTokenCount") - cachedInputTokens); const outputTokens = numberField(usage, "candidatesTokenCount"); const reasoningOutputTokens = numberField(usage, "thoughtsTokenCount"); tokenEvents.push({ timestamp: timestampMs(unknownField(row, "timestamp")), dedupeKey: stringField(row, "uuid"), inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens, totalTokens: inputTokens + outputTokens + cachedInputTokens + reasoningOutputTokens }); }
   const rawId = path.basename(filePath, ".jsonl"); const question = cleanTitle(firstQuestion(messages));
   const titleRecord = rows.find((row) => row.subtype === "custom_title");
   const title = stringField(objectField(titleRecord, "systemPayload"), "customTitle") || question || rawId;
-  const chainTimestamp = chain.map((row) => Date.parse(stringField(row, "timestamp")) || 0).find((timestamp) => timestamp > 0) || stat.mtimeMs;
+  const chainTimestamp = chain.map((row) => timestampMs(unknownField(row, "timestamp"))).find((timestamp) => timestamp > 0) || stat.mtimeMs;
   return { session: createIndexedSession({ keyPrefix: "qwen", rawId, source: "qwen-code", projectPath: stringField(leaf, "cwd") || projectPath, filePath, originalTitle: title, firstQuestion: question, timestamp: chainTimestamp, tokenUsage: tokenUsageFromEvents(tokenEvents), stat }), messages, tokenEvents, traceEvents: qwenTraces(chain) };
 }
 
