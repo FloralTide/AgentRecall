@@ -653,6 +653,7 @@ function qwenRows(filePath: string): unknown[] {
   const rows: unknown[] = [];
   for (const line of text.split(/\r?\n/u)) {
     const trimmed = line.trim(); if (!trimmed) continue;
+    try { rows.push(JSON.parse(trimmed)); continue; } catch { /* a malformed or glued line may still contain valid objects */ }
     const parts = trimmed.split(/\}\s*(?=\{)/u).map((part, index, all) => index < all.length - 1 ? `${part}}` : part);
     for (const part of parts) { try { rows.push(JSON.parse(part)); } catch { /* malformed/incomplete lines are ignored */ } }
   }
@@ -701,11 +702,12 @@ function loadQwenFile(filePath: string, projectPath: string, stat = safeStat(fil
   for (const row of chain) { if (row.type !== "user" && row.type !== "assistant") continue; const content = qwenText(row); if (!content || row.type === "user" && !isMeaningfulUserMessage(content)) continue; messages.push({ role: row.type, content, timestamp: stringField(row, "timestamp"), index: messages.length }); }
   if (!messages.length) return null;
   const tokenEvents: TokenUsageEvent[] = [];
-  for (const row of chain) { const usage = objectField(row, "usageMetadata"); if (!usage) continue; tokenEvents.push({ timestamp: Date.parse(stringField(row, "timestamp")) || 0, dedupeKey: stringField(row, "uuid"), inputTokens: numberField(usage, "promptTokenCount"), outputTokens: numberField(usage, "candidatesTokenCount"), cachedInputTokens: numberField(usage, "cachedContentTokenCount"), reasoningOutputTokens: numberField(usage, "thoughtsTokenCount"), totalTokens: numberField(usage, "promptTokenCount") + numberField(usage, "candidatesTokenCount") + numberField(usage, "cachedContentTokenCount") + numberField(usage, "thoughtsTokenCount") }); }
+  for (const row of chain) { const usage = objectField(row, "usageMetadata"); if (!usage) continue; const cachedInputTokens = numberField(usage, "cachedContentTokenCount"); const inputTokens = Math.max(0, numberField(usage, "promptTokenCount") - cachedInputTokens); const outputTokens = numberField(usage, "candidatesTokenCount"); const reasoningOutputTokens = numberField(usage, "thoughtsTokenCount"); tokenEvents.push({ timestamp: Date.parse(stringField(row, "timestamp")) || 0, dedupeKey: stringField(row, "uuid"), inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens, totalTokens: inputTokens + outputTokens + cachedInputTokens + reasoningOutputTokens }); }
   const rawId = path.basename(filePath, ".jsonl"); const question = cleanTitle(firstQuestion(messages));
   const titleRecord = rows.find((row) => row.subtype === "custom_title");
   const title = stringField(objectField(titleRecord, "systemPayload"), "customTitle") || question || rawId;
-  return { session: createIndexedSession({ keyPrefix: "qwen", rawId, source: "qwen-code", projectPath: stringField(leaf, "cwd") || projectPath, filePath, originalTitle: title, firstQuestion: question, timestamp: Date.parse(stringField(leaf, "timestamp")) || stat.mtimeMs, tokenUsage: tokenUsageFromEvents(tokenEvents), stat }), messages, traceEvents: qwenTraces(chain) };
+  const chainTimestamp = chain.map((row) => Date.parse(stringField(row, "timestamp")) || 0).find((timestamp) => timestamp > 0) || stat.mtimeMs;
+  return { session: createIndexedSession({ keyPrefix: "qwen", rawId, source: "qwen-code", projectPath: stringField(leaf, "cwd") || projectPath, filePath, originalTitle: title, firstQuestion: question, timestamp: chainTimestamp, tokenUsage: tokenUsageFromEvents(tokenEvents), stat }), messages, traceEvents: qwenTraces(chain) };
 }
 
 export function* loadQwenCodeSessionsIterator(root: string, options: SessionLoadOptions = {}): Generator<LoadedSession> {
@@ -714,7 +716,7 @@ export function* loadQwenCodeSessionsIterator(root: string, options: SessionLoad
   for (const project of projects) {
     const chats = path.join(project, "chats");
     const activeIds = new Set<string>();
-    for (const filePath of walkJsonlFiles(chats)) { if (path.relative(chats, filePath).split(/[\\/]+/u).includes("archive")) continue; const stat = safeStat(filePath); if (shouldSkipFile(options, filePath, stat)) continue; const loaded = loadQwenFile(filePath, project, stat); if (loaded) { activeIds.add(loaded.session.rawId); yield loaded; } }
+    for (const filePath of walkJsonlFiles(chats)) { if (path.relative(chats, filePath).split(/[\\/]+/u).includes("archive")) continue; activeIds.add(path.basename(filePath, ".jsonl")); const stat = safeStat(filePath); if (shouldSkipFile(options, filePath, stat)) continue; const loaded = loadQwenFile(filePath, project, stat); if (loaded) yield loaded; }
     for (const filePath of walkJsonlFiles(path.join(chats, "archive"))) { const stat = safeStat(filePath); if (shouldSkipFile(options, filePath, stat)) continue; const loaded = loadQwenFile(filePath, project, stat); if (loaded && !activeIds.has(loaded.session.rawId)) yield loaded; }
   }
 }

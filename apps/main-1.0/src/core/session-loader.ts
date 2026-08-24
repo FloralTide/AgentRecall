@@ -1968,6 +1968,10 @@ function qwenJsonlRows(filePath: string): unknown[] {
   for (const line of text.split(/\r?\n/u)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
+    try {
+      rows.push(JSON.parse(trimmed));
+      continue;
+    } catch { /* a malformed or glued line may still contain valid objects */ }
     const candidates = trimmed.split(/\}\s*(?=\{)/u).map((part, index, parts) => index < parts.length - 1 ? `${part}}` : part);
     for (const candidate of candidates) {
       try { rows.push(JSON.parse(candidate)); } catch { /* malformed or incomplete tail */ }
@@ -2046,9 +2050,9 @@ function loadQwenCodeSessionFile(filePath: string, projectPath: string, stat: Vi
   for (const row of chain) {
     const usage = objectField(row, "usageMetadata");
     if (!usage) continue;
-    const inputTokens = numberField(usage, "promptTokenCount");
-    const outputTokens = numberField(usage, "candidatesTokenCount");
     const cachedInputTokens = numberField(usage, "cachedContentTokenCount");
+    const inputTokens = Math.max(0, numberField(usage, "promptTokenCount") - cachedInputTokens);
+    const outputTokens = numberField(usage, "candidatesTokenCount");
     const reasoningOutputTokens = numberField(usage, "thoughtsTokenCount");
     usageEvents.push(tokenEvent(timestampMs(row.timestamp), stringField(row, "uuid"), inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens));
   }
@@ -2056,7 +2060,8 @@ function loadQwenCodeSessionFile(filePath: string, projectPath: string, stat: Vi
   const firstQuestionText = cleanTitle(firstQuestion(messages));
   const titleRecord = parsedRows.find((row) => row.subtype === "custom_title");
   const title = stringField(objectField(titleRecord, "systemPayload"), "customTitle") || firstQuestionText || rawId;
-  return { session: createIndexedSession({ keyPrefix: "qwen", rawId, source: "qwen-code", projectPath: stringField(leaf, "cwd") || projectPath, filePath, originalTitle: title, firstQuestion: firstQuestionText, timestamp: timestampMs(leaf.timestamp) || stat.mtimeMs, tokenUsage: tokenUsageFromEvents(usageEvents), stat }), messages, traceEvents: qwenTraceEvents(chain) };
+  const chainTimestamp = chain.map((row) => timestampMs(row.timestamp)).find((timestamp) => timestamp > 0) || stat.mtimeMs;
+  return { session: createIndexedSession({ keyPrefix: "qwen", rawId, source: "qwen-code", projectPath: stringField(leaf, "cwd") || projectPath, filePath, originalTitle: title, firstQuestion: firstQuestionText, timestamp: chainTimestamp, tokenUsage: tokenUsageFromEvents(usageEvents), stat }), messages, traceEvents: qwenTraceEvents(chain) };
 }
 
 function* loadQwenCodeSessionsIterator(root: string, options: SessionLoadOptions): Generator<LoadedSession> {
@@ -2070,10 +2075,11 @@ function* loadQwenCodeSessionsIterator(root: string, options: SessionLoadOptions
     for (const filePath of walkJsonlFiles(chats)) {
       const relative = path.relative(chats, filePath);
       if (relative.split(/[\\/]+/u).includes("archive")) continue;
+      activeIds.add(path.basename(filePath, ".jsonl"));
       const stat = safeStat(filePath);
       if (shouldSkipFile(options, filePath, stat)) continue;
       const loaded = loadQwenCodeSessionFile(filePath, projectPath, stat);
-      if (loaded) { activeIds.add(loaded.session.rawId); yield loaded; }
+      if (loaded) yield loaded;
     }
     for (const filePath of walkJsonlFiles(path.join(chats, "archive"))) {
       const stat = safeStat(filePath);

@@ -35,4 +35,29 @@ describe("Qwen Code sessions", () => {
     process.env.QWEN_HOME = home; process.env.QWEN_RUNTIME_DIR = runtime;
     const loaded = loadDefaultSessions({ includeQwenCode: true }).filter((item) => item.session.source === "qwen-code"); expect(loaded).toHaveLength(1); expect(loaded[0].messages[0].content).toBe("runtime");
   });
+
+  it("keeps braces inside valid JSON text and normalizes cached tokens and creation time", () => {
+    const root = fixture(); const chats = path.join(root, ".qwen", "projects", "project", "chats"); fs.mkdirSync(chats, { recursive: true });
+    const createdAt = "2026-08-23T00:00:00.000Z"; const updatedAt = "2026-08-23T01:00:00.000Z";
+    const user = record("u", null, "user", "keep }{ together", { timestamp: createdAt });
+    const assistant = record("a", "u", "assistant", "answer", { timestamp: updatedAt, usageMetadata: { promptTokenCount: 10, cachedContentTokenCount: 4, candidatesTokenCount: 3, thoughtsTokenCount: 2 } });
+    fs.writeFileSync(path.join(chats, "tokens.jsonl"), `${JSON.stringify(user)}\n${JSON.stringify(assistant)}\n`);
+
+    const [loaded] = loadDefaultSessions({ homeDir: root, includeQwenCode: true });
+    expect(loaded.messages.map((message) => message.content)).toEqual(["keep }{ together", "answer"]);
+    expect(loaded.session.timestamp).toBe(Date.parse(createdAt));
+    expect(loaded.session.tokenUsage).toMatchObject({ inputTokens: 6, cachedInputTokens: 4, outputTokens: 3, reasoningOutputTokens: 2, totalTokens: 15 });
+  });
+
+  it("does not let an archive copy replace a skipped active session", () => {
+    const root = fixture(); const chats = path.join(root, ".qwen", "projects", "project", "chats"); fs.mkdirSync(path.join(chats, "archive"), { recursive: true });
+    const activePath = path.join(chats, "same.jsonl");
+    fs.writeFileSync(activePath, JSON.stringify(record("active", null, "user", "active")));
+    fs.writeFileSync(path.join(chats, "archive", "same.jsonl"), JSON.stringify(record("archive", null, "user", "archive")));
+    const onSkippedFile = vi.fn();
+
+    const loaded = loadDefaultSessions({ homeDir: root, includeQwenCode: true, shouldSkipFile: (filePath) => filePath === activePath, onSkippedFile });
+    expect(loaded.filter((item) => item.session.source === "qwen-code")).toEqual([]);
+    expect(onSkippedFile).toHaveBeenCalledWith(activePath, expect.any(Object));
+  });
 });
