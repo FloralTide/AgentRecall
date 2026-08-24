@@ -104,10 +104,8 @@ function resolveKimiCodeRoot(homeDir: string, options: SessionLoadOptions): stri
     : path.join(homeDir, KIMI_CODE_DIR);
 }
 
-function resolveQwenCodeRoot(homeDir: string, options: SessionLoadOptions): string {
-  return options.homeDir === undefined
-    ? process.env.QWEN_RUNTIME_DIR?.trim() || process.env.QWEN_HOME?.trim() || path.join(homeDir, QWEN_DIR)
-    : path.join(homeDir, QWEN_DIR);
+function resolveQwenCodeRoot(homeDir: string): string {
+  return process.env.QWEN_RUNTIME_DIR?.trim() || process.env.QWEN_HOME?.trim() || path.join(homeDir, QWEN_DIR);
 }
 
 interface CodexSessionMeta {
@@ -1943,7 +1941,7 @@ export function* loadDefaultSessionsIterator(options: SessionLoadOptions = {}): 
     options,
   );
   if (options.includeQwenCode) {
-    yield* loadQwenCodeSessionsIterator(resolveQwenCodeRoot(homeDir, options), options);
+    yield* loadQwenCodeSessionsIterator(resolveQwenCodeRoot(homeDir), options);
   }
   if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
   if (options.includeTcodex) yield* loadCodexSessionsIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);
@@ -1996,7 +1994,7 @@ export async function* loadDefaultSessionsAsyncIterator(options: SessionLoadOpti
     options,
   );
   if (options.includeQwenCode) {
-    yield* loadQwenCodeSessionsIterator(resolveQwenCodeRoot(homeDir, options), options);
+    yield* loadQwenCodeSessionsIterator(resolveQwenCodeRoot(homeDir), options);
   }
   if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
   if (options.includeTcodex) yield* loadCodexSessionsAsyncIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);

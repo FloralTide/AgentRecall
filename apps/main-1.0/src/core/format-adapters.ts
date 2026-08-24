@@ -378,7 +378,8 @@ export const qwenAdapter: FormatAdapter = {
     const message = row.message && typeof row.message === "object" ? row.message as Record<string, unknown> : null;
     const displayText = role === "user" && typeof payload?.displayText === "string" ? payload.displayText : "";
     const parts = Array.isArray(message?.parts) ? message.parts : [];
-    const text = displayText || parts.map((part) => part && typeof part === "object" && (part as Record<string, unknown>).thought !== true && typeof (part as Record<string, unknown>).text === "string" ? (part as Record<string, unknown>).text as string : "").filter(Boolean).join("\n");
+    const partsText = parts.map((part) => part && typeof part === "object" && (part as Record<string, unknown>).thought !== true ? (typeof (part as Record<string, unknown>).text === "string" ? (part as Record<string, unknown>).text as string : typeof (part as Record<string, unknown>).content === "string" ? (part as Record<string, unknown>).content as string : "") : "").filter(Boolean).join("\n");
+    const text = displayText || (parts.length ? partsText : typeof message?.text === "string" ? message.text : typeof message?.content === "string" ? message.content : "");
     return text ? { role, content: text, timestamp: timestampFromRaw(raw) } : null;
   },
 };

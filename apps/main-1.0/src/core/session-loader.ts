@@ -62,10 +62,8 @@ const KIMI_CODE_DIR = ".kimi-code";
 const KIMI_LEGACY_DIR = ".kimi";
 const QWEN_DIR = ".qwen";
 
-function resolveQwenCodeRoot(homeDir: string, options: SessionLoadOptions): string {
-  return options.homeDir === undefined
-    ? process.env.QWEN_RUNTIME_DIR?.trim() || process.env.QWEN_HOME?.trim() || path.join(homeDir, QWEN_DIR)
-    : path.join(homeDir, QWEN_DIR);
+function resolveQwenCodeRoot(homeDir: string): string {
+  return process.env.QWEN_RUNTIME_DIR?.trim() || process.env.QWEN_HOME?.trim() || path.join(homeDir, QWEN_DIR);
 }
 const TRAE_DIR_NAMES = [".trae", ".trae-cn"] as const;
 const CODEX_WORKSPACE_PLACEHOLDER = /^<[^>]+>$/u;
@@ -1980,22 +1978,6 @@ function qwenJsonlRows(filePath: string): unknown[] {
   return rows;
 }
 
-function qwenPartText(part: unknown): string {
-  if (!isRecord(part)) return "";
-  if (part.thought === true) return "";
-  return stringField(part, "text") || stringField(part, "content");
-}
-
-function qwenRecordText(row: Record<string, unknown>): string {
-  const payload = objectField(row, "systemPayload");
-  const displayText = stringField(payload, "displayText");
-  if (row.type === "user" && displayText) return displayText;
-  const message = objectField(row, "message");
-  const parts = message?.parts;
-  if (Array.isArray(parts)) return parts.map(qwenPartText).filter(Boolean).join("\n");
-  return qwenPartText(message);
-}
-
 function qwenTraceEvents(rows: Record<string, unknown>[]): SessionTraceEvent[] {
   const events: TraceEventDraft[] = [];
   for (const row of rows) {
@@ -2038,13 +2020,7 @@ function loadQwenCodeSessionFile(filePath: string, projectPath: string, stat: Vi
     current = parent ? records.get(parent) : undefined;
   }
   chain.reverse();
-  const messages: SessionMessage[] = [];
-  for (const row of chain) {
-    if (row.type !== "user" && row.type !== "assistant") continue;
-    const content = qwenRecordText(row);
-    if (!content || (row.type === "user" && !isMeaningfulUserMessage(content))) continue;
-    messages.push(messageFromParts(row.type, content, timestampString(row.timestamp), messages.length));
-  }
+  const messages = sourceMessages(chain, "qwen");
   if (!messages.length) return null;
   const usageEvents: TokenUsageEvent[] = [];
   for (const row of chain) {
@@ -2061,7 +2037,7 @@ function loadQwenCodeSessionFile(filePath: string, projectPath: string, stat: Vi
   const titleRecord = parsedRows.find((row) => row.subtype === "custom_title");
   const title = stringField(objectField(titleRecord, "systemPayload"), "customTitle") || firstQuestionText || rawId;
   const chainTimestamp = chain.map((row) => timestampMs(row.timestamp)).find((timestamp) => timestamp > 0) || stat.mtimeMs;
-  return { session: createIndexedSession({ keyPrefix: "qwen", rawId, source: "qwen-code", projectPath: stringField(leaf, "cwd") || projectPath, filePath, originalTitle: title, firstQuestion: firstQuestionText, timestamp: chainTimestamp, tokenUsage: tokenUsageFromEvents(usageEvents), stat }), messages, traceEvents: qwenTraceEvents(chain) };
+  return { session: createIndexedSession({ keyPrefix: "qwen", rawId, source: "qwen-code", projectPath: stringField(leaf, "cwd") || projectPath, filePath, originalTitle: title, firstQuestion: firstQuestionText, timestamp: chainTimestamp, tokenUsage: tokenUsageFromEvents(usageEvents), stat }), messages, tokenEvents: usageEvents, traceEvents: qwenTraceEvents(chain) };
 }
 
 function* loadQwenCodeSessionsIterator(root: string, options: SessionLoadOptions): Generator<LoadedSession> {
@@ -4334,7 +4310,7 @@ export function* loadDefaultSessionsIterator(options: SessionLoadOptions = {}): 
   }
   if (options.includeKimiCli) yield* loadKimiSessionsIterator(path.join(homeDir, KIMI_LEGACY_DIR), resolveKimiCodeRoot(homeDir, options), options);
   if (options.includeQwenCode) {
-    yield* loadQwenCodeSessionsIterator(resolveQwenCodeRoot(homeDir, options), options);
+    yield* loadQwenCodeSessionsIterator(resolveQwenCodeRoot(homeDir), options);
   }
   if (options.includeOpenClaw) {
     yield* loadOpenClawSessionsIterator(path.join(homeDir, ".openclaw"), options);
@@ -4375,7 +4351,7 @@ export async function* loadDefaultSessionsAsyncIterator(options: SessionLoadOpti
   }
   if (options.includeKimiCli) yield* loadKimiSessionsIterator(path.join(homeDir, KIMI_LEGACY_DIR), resolveKimiCodeRoot(homeDir, options), options);
   if (options.includeQwenCode) {
-    yield* loadQwenCodeSessionsIterator(resolveQwenCodeRoot(homeDir, options), options);
+    yield* loadQwenCodeSessionsIterator(resolveQwenCodeRoot(homeDir), options);
   }
   if (options.includeOpenClaw) {
     yield* loadOpenClawSessionsIterator(path.join(homeDir, ".openclaw"), options);

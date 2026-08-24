@@ -219,6 +219,9 @@ describe("format adapters", () => {
       type: "assistant",
       message: { parts: [{ thought: true, text: "推理" }, { text: "回答" }] },
     })).toMatchObject({ role: "assistant", content: "回答" });
+    expect(getAdapter("qwen").parseLine({ type: "assistant", message: { text: "文本回退" } })).toMatchObject({ role: "assistant", content: "文本回退" });
+    expect(getAdapter("qwen").parseLine({ type: "assistant", message: { text: "不得回退的推理", parts: [{ thought: true, text: "推理" }] } })).toBeNull();
+    expect(getAdapter("qwen").parseLine({ type: "tool_result", message: { text: "工具输出" } })).toBeNull();
   });
 
   it("skips the CodeBuddy CLI bootstrap 'code' root message", () => {
