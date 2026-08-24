@@ -31,11 +31,11 @@ function record(uuid: string, parentUuid: string | null, type: "user" | "assista
 describe("Qwen Code sessions", () => {
   it("reads the active parent chain, prefers displayText, and ignores archive duplicates", () => {
     const root = fixture(); const chats = path.join(root, ".qwen", "projects", "project", "chats"); fs.mkdirSync(path.join(chats, "archive"), { recursive: true });
-    const rows = [record("u", null, "user", "internal prompt", { systemPayload: { displayText: "visible prompt" } }), record("dead", null, "user", "rewound"), record("a", "u", "assistant", "answer", { usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, thoughtsTokenCount: 1 }, message: { role: "model", parts: [{ thought: true, text: "thinking" }, { text: "answer" }, { functionCall: { name: "read_file", id: "c1" } }] } }), { uuid: "t", parentUuid: "a", sessionId: "qwen-1", timestamp: "2026-08-23T00:00:01.000Z", type: "tool_result", cwd: "C:/repo", message: { role: "user", parts: [] }, toolCallResult: { output: "done" } }, { type: "system", subtype: "metadata" }, { uuid: "title", parentUuid: "t", sessionId: "qwen-1", timestamp: "2026-08-23T00:00:02.000Z", type: "system", subtype: "custom_title", systemPayload: { customTitle: "Named session" } }];
+    const rows = [record("u", null, "user", "internal prompt", { systemPayload: { displayText: "visible prompt" } }), record("dead", null, "user", "rewound"), record("a", "u", "assistant", "answer", { usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, thoughtsTokenCount: 1 }, message: { role: "model", parts: [{ thought: true, text: "thinking" }, { text: "answer" }, { functionCall: { name: "read_file", id: "c1" } }] } }), { uuid: "t", parentUuid: "a", sessionId: "qwen-1", timestamp: "2026-08-23T00:00:01.000Z", type: "tool_result", cwd: "C:/repo", message: { role: "user", parts: [{ functionResponse: { id: "c1", name: "read_file", response: { output: "done" } } }] }, toolCallResult: { callId: "c1", output: "done" } }, { type: "system", subtype: "metadata" }, { uuid: "title", parentUuid: "t", sessionId: "qwen-1", timestamp: "2026-08-23T00:00:02.000Z", type: "system", subtype: "custom_title", systemPayload: { customTitle: "Named session" } }];
     fs.writeFileSync(path.join(chats, "qwen-1.jsonl"), `${rows.map((row) => JSON.stringify(row)).join("")}\nnot-json\n{"uuid":"tail"`);
     fs.writeFileSync(path.join(chats, "archive", "qwen-1.jsonl"), JSON.stringify(record("old", null, "user", "archive")));
     const [loaded] = loadDefaultSessions({ homeDir: root, includeQwenCode: true });
-    expect(loaded.session.source).toBe("qwen-code"); expect(loaded.session.originalTitle).toBe("Named session"); expect(loaded.messages.map((m) => m.content)).toEqual(["visible prompt", "answer"]); expect(loaded.session.tokenUsage?.totalTokens).toBe(6); expect(loaded.traceEvents?.some((e) => e.kind === "tool_call")).toBe(true); expect(loaded.traceEvents?.some((e) => e.eventType === "qwen.tool_result")).toBe(true); expect(loaded.messages.some((m) => m.content === "rewound")).toBe(false);
+    expect(loaded.session.source).toBe("qwen-code"); expect(loaded.session.originalTitle).toBe("Named session"); expect(loaded.messages.map((m) => m.content)).toEqual(["visible prompt", "answer"]); expect(loaded.session.tokenUsage?.totalTokens).toBe(6); expect(loaded.traceEvents?.some((e) => e.kind === "tool_call")).toBe(true); expect(loaded.traceEvents?.filter((e) => e.eventType === "qwen.tool_result")).toEqual([expect.objectContaining({ callId: "c1" })]); expect(loaded.messages.some((m) => m.content === "rewound")).toBe(false);
   });
 
   it("uses QWEN_RUNTIME_DIR before QWEN_HOME", () => {
@@ -111,14 +111,14 @@ describe("Qwen Code sessions", () => {
     const rows = [
       record("early", null, "user", "early", { timestamp: "2026-08-23T00:00:00.000Z" }),
       record("orphan", "missing", "assistant", "later", { usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 2 }, message: { parts: [{ text: "later" }, { functionCall: { name: "read_file", id: "call-1" } }] } }),
-      { uuid: "tool", parentUuid: "orphan", sessionId: "qwen-1", timestamp: "2026-08-23T00:00:02.000Z", type: "tool_result", cwd: "C:/repo", message: { role: "user", parts: [] }, toolCallResult: { output: "done" } },
+      { uuid: "tool", parentUuid: "orphan", sessionId: "qwen-1", timestamp: "2026-08-23T00:00:02.000Z", type: "tool_result", cwd: "C:/repo", message: { role: "user", parts: [] }, toolCallResult: { callId: "call-1", output: "done" } },
       record("leaf", "tool", "assistant", "leaf", { usageMetadata: { promptTokenCount: 6, candidatesTokenCount: 3 } }),
     ];
     fs.writeFileSync(path.join(chats, "broken.jsonl"), `${JSON.stringify(rows[0])}\nnot-json\n${rows.slice(1).map((row) => JSON.stringify(row)).join("\n")}\n`);
     const [loaded] = loadDefaultSessions({ homeDir: root, includeQwenCode: true });
     expect(loaded.messages.map((message) => message.content)).toEqual(["early", "later", "leaf"]);
     expect(loaded.tokenEvents?.map((event) => event.dedupeKey)).toEqual(["orphan", "leaf"]);
-    expect(loaded.traceEvents?.some((event) => event.eventType === "qwen.tool_result")).toBe(true);
+    expect(loaded.traceEvents?.filter((event) => event.eventType === "qwen.tool_result")).toEqual([expect.objectContaining({ callId: "call-1" })]);
     expect(loaded.session.timestamp).toBe(Date.parse("2026-08-23T00:00:00.000Z"));
   });
 
@@ -128,11 +128,13 @@ describe("Qwen Code sessions", () => {
       record("early", null, "user", "early"),
       record("dup", "early", "assistant", "first", { usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 } }),
       record("dup", "missing", "assistant", "second", { usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 2 }, message: { parts: [{ text: "second" }, { functionCall: { name: "read_file", id: "dup-call" } }] } }),
+      { type: "system", subtype: "metadata", usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 100 } },
     ];
     fs.writeFileSync(path.join(chats, "duplicate.jsonl"), `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
     const [loaded] = loadDefaultSessions({ homeDir: root, includeQwenCode: true });
     expect(loaded.messages.map((message) => message.content)).toEqual(["early", "first", "second"]);
-    expect(loaded.tokenEvents?.map((event) => event.dedupeKey)).toEqual(["dup", "dup"]);
+    expect(loaded.tokenEvents?.map((event) => event.dedupeKey)).toEqual(["dup"]);
+    expect(loaded.tokenEvents?.[0].totalTokens).toBe(4);
     expect(loaded.traceEvents?.some((event) => event.eventType === "qwen.functionCall")).toBe(true);
   });
 });

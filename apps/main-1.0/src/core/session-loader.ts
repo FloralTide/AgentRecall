@@ -2001,6 +2001,12 @@ function qwenJsonlRows(filePath: string): unknown[] {
   return rows;
 }
 
+function qwenToolResultCallId(row: Record<string, unknown>, parts: Record<string, unknown>[]): string | null {
+  const functionResponse = parts.map((part) => objectField(part, "functionResponse")).find(Boolean);
+  const toolCallResult = objectField(row, "toolCallResult");
+  return stringField(functionResponse, "id") || stringField(toolCallResult, "callId") || stringField(toolCallResult, "id") || stringField(row, "uuid") || null;
+}
+
 function qwenTraceEvents(rows: Record<string, unknown>[]): SessionTraceEvent[] {
   const events: TraceEventDraft[] = [];
   for (const row of rows) {
@@ -2011,13 +2017,14 @@ function qwenTraceEvents(rows: Record<string, unknown>[]): SessionTraceEvent[] {
       const call = objectField(part, "functionCall");
       const result = objectField(part, "functionResponse");
       const thought = part.thought === true;
+      if (row.type === "tool_result" && result) continue;
       if (!call && !result && !thought) continue;
       const value = call || result || part;
       const title = call ? `function: ${stringField(call, "name") || "call"}` : result ? `function result: ${stringField(result, "name") || "result"}` : "reasoning";
       events.push({ kind: call ? "tool_call" : result ? "tool_result" : "event", source: "qwen", title, detail: stringifyDetail(value), timestamp: timestampString(row.timestamp), callId: stringField(call || result, "id") || null, eventType: call ? "qwen.functionCall" : result ? "qwen.functionResponse" : "qwen.thought", status: call ? "running" : result ? "completed" : "unknown" });
     }
     if (row.type === "tool_result") {
-      events.push({ kind: "tool_result", source: "qwen", title: "tool result", detail: stringifyDetail(row.toolCallResult || row.message || row), timestamp: timestampString(row.timestamp), callId: stringField(row, "uuid") || null, eventType: "qwen.tool_result", status: "completed" });
+      events.push({ kind: "tool_result", source: "qwen", title: "tool result", detail: stringifyDetail(row.toolCallResult || row.message || row), timestamp: timestampString(row.timestamp), callId: qwenToolResultCallId(row, parts.filter(isRecord)), eventType: "qwen.tool_result", status: "completed" });
     }
   }
   return dedupeTraceEvents(events);
@@ -2052,7 +2059,7 @@ function loadQwenCodeSessionFile(filePath: string, projectPath: string, stat: Vi
   const activeRows = chainInvalid ? parsedRows : chain.reverse();
   const messages = sourceMessages(activeRows, "qwen");
   if (!messages.length) return null;
-  const usageEvents: TokenUsageEvent[] = [];
+  const usageEvents = new Map<string, TokenUsageEvent>();
   for (const row of activeRows) {
     const usage = objectField(row, "usageMetadata");
     if (!usage) continue;
@@ -2060,14 +2067,17 @@ function loadQwenCodeSessionFile(filePath: string, projectPath: string, stat: Vi
     const inputTokens = Math.max(0, numberField(usage, "promptTokenCount") - cachedInputTokens);
     const outputTokens = numberField(usage, "candidatesTokenCount");
     const reasoningOutputTokens = numberField(usage, "thoughtsTokenCount");
-    usageEvents.push(tokenEvent(timestampMs(row.timestamp), stringField(row, "uuid"), inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens));
+    const dedupeKey = stringField(row, "uuid");
+    if (!dedupeKey) continue;
+    putTokenEvent(usageEvents, tokenEvent(timestampMs(row.timestamp), dedupeKey, inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens));
   }
+  const tokenEvents = [...usageEvents.values()];
   const rawId = path.basename(filePath, ".jsonl");
   const firstQuestionText = cleanTitle(firstQuestion(messages));
   const titleRecord = [...parsedRows].reverse().find((row) => row.subtype === "custom_title" && typeof objectField(row, "systemPayload")?.customTitle === "string");
   const title = stringField(objectField(titleRecord, "systemPayload"), "customTitle") || firstQuestionText || rawId;
   const chainTimestamp = activeRows.map((row) => timestampMs(row.timestamp)).find((timestamp) => timestamp > 0) || stat.mtimeMs;
-  return { session: createIndexedSession({ keyPrefix: "qwen", rawId, source: "qwen-code", projectPath: stringField(leaf, "cwd") || projectPath, filePath, originalTitle: title, firstQuestion: firstQuestionText, timestamp: chainTimestamp, tokenUsage: tokenUsageFromEvents(usageEvents), stat }), messages, tokenEvents: usageEvents, traceEvents: qwenTraceEvents(activeRows) };
+  return { session: createIndexedSession({ keyPrefix: "qwen", rawId, source: "qwen-code", projectPath: stringField(leaf, "cwd") || projectPath, filePath, originalTitle: title, firstQuestion: firstQuestionText, timestamp: chainTimestamp, tokenUsage: tokenUsageFromEvents(tokenEvents), stat }), messages, tokenEvents, traceEvents: qwenTraceEvents(activeRows) };
 }
 
 function* loadQwenCodeSessionsIterator(root: string, options: SessionLoadOptions): Generator<LoadedSession> {

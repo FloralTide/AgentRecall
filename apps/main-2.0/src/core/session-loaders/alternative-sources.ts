@@ -678,6 +678,12 @@ function qwenRows(filePath: string): unknown[] {
   return rows;
 }
 
+function qwenToolResultCallId(row: Record<string, unknown>, parts: Record<string, unknown>[]): string | null {
+  const functionResponse = parts.map((part) => objectField(part, "functionResponse")).find(Boolean);
+  const toolCallResult = objectField(row, "toolCallResult");
+  return stringField(functionResponse, "id") || stringField(toolCallResult, "callId") || stringField(toolCallResult, "id") || stringField(row, "uuid") || null;
+}
+
 function qwenTraces(rows: Record<string, unknown>[]): SessionTraceEvent[] {
   const events: TraceEventDraft[] = [];
   for (const row of rows) {
@@ -686,11 +692,12 @@ function qwenTraces(rows: Record<string, unknown>[]): SessionTraceEvent[] {
     for (const part of parts) {
       if (!isRecord(part)) continue;
       const call = objectField(part, "functionCall"); const result = objectField(part, "functionResponse");
+      if (row.type === "tool_result" && result) continue;
       if (!call && !result && part.thought !== true) continue;
       events.push({ kind: call ? "tool_call" : result ? "tool_result" : "event", source: "qwen", title: call ? `function: ${stringField(call, "name") || "call"}` : result ? `function result: ${stringField(result, "name") || "result"}` : "reasoning", detail: stringifyDetail(call || result || part), timestamp: timestampString(unknownField(row, "timestamp")), callId: stringField(call || result, "id") || null, eventType: call ? "qwen.functionCall" : result ? "qwen.functionResponse" : "qwen.thought", status: call ? "running" : result ? "completed" : "unknown" });
     }
     if (row.type === "tool_result") {
-      events.push({ kind: "tool_result", source: "qwen", title: "tool result", detail: stringifyDetail(row.toolCallResult || row.message || row), timestamp: timestampString(unknownField(row, "timestamp")), callId: stringField(row, "uuid") || null, eventType: "qwen.tool_result", status: "completed" });
+      events.push({ kind: "tool_result", source: "qwen", title: "tool result", detail: stringifyDetail(row.toolCallResult || row.message || row), timestamp: timestampString(unknownField(row, "timestamp")), callId: qwenToolResultCallId(row, parts.filter(isRecord)), eventType: "qwen.tool_result", status: "completed" });
     }
   }
   return dedupeTraceEvents(events);
@@ -704,8 +711,9 @@ function loadQwenFile(filePath: string, projectPath: string, stat = safeStat(fil
   while (current) { const uuid = stringField(current, "uuid"); if (!uuid || visited.has(uuid)) { chainInvalid = true; break; } visited.add(uuid); chain.push(current); const parentValue = unknownField(current, "parentUuid"); if (parentValue === null || parentValue === undefined || parentValue === "") { current = undefined; continue; } if (typeof parentValue !== "string") { chainInvalid = true; break; } current = byId.get(parentValue); if (!current) chainInvalid = true; }
   const activeRows = chainInvalid ? rows : chain.reverse(); const messages = sourceMessages(activeRows, "qwen");
   if (!messages.length) return null;
-  const tokenEvents: TokenUsageEvent[] = [];
-  for (const row of activeRows) { const usage = objectField(row, "usageMetadata"); if (!usage) continue; const cachedInputTokens = numberField(usage, "cachedContentTokenCount"); const inputTokens = Math.max(0, numberField(usage, "promptTokenCount") - cachedInputTokens); const outputTokens = numberField(usage, "candidatesTokenCount"); const reasoningOutputTokens = numberField(usage, "thoughtsTokenCount"); tokenEvents.push({ timestamp: timestampMs(unknownField(row, "timestamp")), dedupeKey: stringField(row, "uuid"), inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens, totalTokens: inputTokens + outputTokens + cachedInputTokens + reasoningOutputTokens }); }
+  const tokenEntries = new Map<string, TokenUsageEvent>();
+  for (const row of activeRows) { const usage = objectField(row, "usageMetadata"); if (!usage) continue; const cachedInputTokens = numberField(usage, "cachedContentTokenCount"); const inputTokens = Math.max(0, numberField(usage, "promptTokenCount") - cachedInputTokens); const outputTokens = numberField(usage, "candidatesTokenCount"); const reasoningOutputTokens = numberField(usage, "thoughtsTokenCount"); const dedupeKey = stringField(row, "uuid"); if (!dedupeKey) continue; putTokenEvent(tokenEntries, { timestamp: timestampMs(unknownField(row, "timestamp")), dedupeKey, inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens, totalTokens: inputTokens + outputTokens + cachedInputTokens + reasoningOutputTokens }); }
+  const tokenEvents = [...tokenEntries.values()];
   const rawId = path.basename(filePath, ".jsonl"); const question = cleanTitle(firstQuestion(messages));
   const titleRecord = [...rows].reverse().find((row) => row.subtype === "custom_title" && typeof objectField(row, "systemPayload")?.customTitle === "string");
   const title = stringField(objectField(titleRecord, "systemPayload"), "customTitle") || question || rawId;
