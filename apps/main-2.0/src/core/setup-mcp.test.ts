@@ -104,6 +104,32 @@ describe("setup-mcp Codex config", () => {
     expect(next).toContain('args = ["/abs/gateway.js"]');
   });
 
+  it("replaces nested AgentRecall tables without touching similarly named servers", () => {
+    const current = [
+      "[mcp_servers.agent_recall.env]",
+      'AGENT_RECALL_MCP_BRIDGE = "/old/bridge.json"',
+      "",
+      "[mcp_servers.agent_recall.tools.search_sessions]",
+      'approval_mode = "approve"',
+      "",
+      "[mcp_servers.agent_recall_v2.env]",
+      'AGENT_RECALL_MCP_BRIDGE = "/legacy/bridge.json"',
+      "",
+      "[mcp_servers.agent_recall_extra]",
+      'command = "keep-me"',
+    ].join("\n");
+
+    const next = applyCodexConfig(current, "/abs/gateway.js", false, "node", "/new/bridge.json");
+
+    expect(next).not.toContain("[mcp_servers.agent_recall.env]");
+    expect(next).not.toContain("[mcp_servers.agent_recall.tools.search_sessions]");
+    expect(next).not.toContain("[mcp_servers.agent_recall_v2.env]");
+    expect(next).toContain("[mcp_servers.agent_recall_extra]");
+    expect(next).toContain('command = "keep-me"');
+    expect(next.match(/\[mcp_servers\.agent_recall\]/g)).toHaveLength(1);
+    expect(next).toContain('env = { AGENT_RECALL_MCP_BRIDGE = "/new/bridge.json" }');
+  });
+
   it("pins the Gateway to the current AgentRecall bridge", () => {
     const next = applyCodexConfig("", "/abs/gateway.js", false, "node", "/data/automation-mcp-bridge.json");
     expect(next).toContain('env = { AGENT_RECALL_MCP_BRIDGE = "/data/automation-mcp-bridge.json" }');

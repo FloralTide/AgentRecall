@@ -310,15 +310,16 @@ function removeCodexBlock(toml) {
   const out = [];
   let skipping = false;
   for (const line of lines) {
-    if (line.trim() === `[${CODEX_SECTION}]` || line.trim() === `[${LEGACY_CODEX_SECTION}]`) {
-      skipping = true;
-      continue;
+    const tableHeader = line.trim().match(/^(?:\[([^\[\]]+)\]|\[\[([^\[\]]+)\]\])\s*(?:#.*)?$/);
+    if (tableHeader) {
+      const section = tableHeader[1] || tableHeader[2];
+      skipping = section === CODEX_SECTION
+        || section.startsWith(`${CODEX_SECTION}.`)
+        || section === LEGACY_CODEX_SECTION
+        || section.startsWith(`${LEGACY_CODEX_SECTION}.`);
+      if (skipping) continue;
     }
-    if (skipping) {
-      // Stop skipping at the next table header.
-      if (/^\s*\[/.test(line)) skipping = false;
-      else continue;
-    }
+    if (skipping) continue;
     out.push(line);
   }
   return out.join("\n");
