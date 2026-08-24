@@ -8,7 +8,8 @@ import {
   type InstalledSkillsSnapshot,
   type SkillSource,
 } from "./skill-manager";
-import { AGENT_SKILL_REGISTRY, SKILL_INSTALL_TARGETS, agentInstallTargetDir, type SkillInstallTarget } from "./agent-skill-registry";
+import { AGENT_SKILL_REGISTRY, SKILL_INSTALL_TARGETS, type SkillInstallTarget } from "./agent-skill-registry";
+import { agentInstallTargetDir } from "./agent-skill-paths";
 
 export type { SkillInstallTarget } from "./agent-skill-registry";
 export type ManagedSkillOriginKind = "local" | "skills-sh" | "remote" | "builtin";

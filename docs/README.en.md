@@ -100,7 +100,7 @@ agent-recall-v2
 
 After launch, the app stays in the menu bar or system tray and prepares its local data service automatically, so you do not need to install PostgreSQL separately. On macOS, run `agent-recall-v2 install-app` to create a local `agent-recall-v2.app` that opens from Launchpad, Spotlight, or the Dock. Run `agent-recall-v2 --update` to update, or check for updates from **Settings → About** inside the app.
 
-v2 uses separate commands, app data, a database, MCP identifiers, and an update cache from v1. It does not currently read or import v1 data, and both versions can be installed and run at the same time. See [Install.md](../Install.md) for complete installation, update, rollback, and uninstall instructions.
+v2 uses separate commands, app data, a database, MCP identifiers, and an update cache from v1. It does not read v1 data automatically; use **Settings → About → V1 data migration** when you want to import it manually. Both versions can be installed and run at the same time. See [Install.md](../Install.md) for complete installation, update, rollback, and uninstall instructions.
 
 > For more detailed usage instructions, see the [AgentRecall v2 Guide](./v2/guide.md).
 

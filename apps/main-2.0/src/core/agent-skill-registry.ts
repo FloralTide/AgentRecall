@@ -5,8 +5,6 @@
 // Keep this as the single source of truth — do not hardcode agent names in
 // mapping functions elsewhere.
 
-import * as path from "node:path";
-
 /** Stable identifier of an agent AgentRecall can manage Skills for. */
 export type SkillAgent = "codex" | "claude" | "codebuddy" | "qoder" | "trae" | "pi";
 
@@ -130,18 +128,4 @@ export function agentEntry(id: SkillAgent): AgentSkillRegistryEntry {
 
 export function agentLabel(id: SkillAgent): string {
   return agentEntry(id).label;
-}
-
-/** Absolute path to an agent's Skills directory; null when not supported. */
-export function agentSkillDir(id: SkillAgent, homeDir: string): string | null {
-  const dir = agentEntry(id).skillDir;
-  return dir ? path.join(homeDir, dir) : null;
-}
-
-export function agentInstallTargetDir(target: SkillInstallTarget, homeDir: string, codexHome?: string): string {
-  if (target === "codex") return path.join(codexHome ?? path.join(homeDir, ".codex"), "skills");
-  if (target === "codex-shared") return path.join(homeDir, ".agents", "skills");
-  const entry = AGENT_SKILL_REGISTRY.find((candidate) => candidate.installTarget === target);
-  if (!entry?.skillDir) throw new Error(`Unknown install target: ${target}`);
-  return path.join(homeDir, entry.skillDir);
 }

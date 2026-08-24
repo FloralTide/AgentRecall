@@ -2,12 +2,12 @@
 
 ## 文档状态
 
-- 状态：已实现并通过实现审查
+- 状态：主进程、IPC 与领域能力已实现；当前 Workflow Core UI 尚未重新接入导入、导出与官方克隆入口
 - 适用范围：`apps/main-2.0` 的 Workflow V2
 - 主要读者：负责实现、审查和验证 Workflow 能力的维护者
 - 内容类型：设计说明与接口参考
 
-本文定义官方 Workflow 克隆、个人 Workflow 文件导入和个人 Workflow 文件导出的完整产品与技术契约。当前实现以本文的行为规则、信任边界和验收标准为准。
+本文定义官方 Workflow 克隆、个人 Workflow 文件导入和个人 Workflow 文件导出的完整产品与技术契约。主进程、IPC 与领域能力以本文的行为规则、信任边界和验收标准为准；当前 `workflow-feature-page.tsx` 只提供 Workflow Core 的列表、编辑和运行能力，尚未重新接入本设计中的导入、导出与官方克隆 UI。
 
 `apps/main-1.0` 当前没有 Workflow V2 合约，本设计不要求在 V1 中增加同等能力。该范围与会话功能的双应用同步规则无关。
 
@@ -61,7 +61,7 @@
 - 脚本节点已经具备风险、能力、权限确认和审计机制。导入不能再创建一套平行的永久信任系统。
 - `WorkflowStatus` 已经包含 `draft`，但没有 `待配置` 状态。
 - 官方 Workflow 通过 `sourceType: "official"` 和 `topologyLocked: true` 与个人 Workflow 分离。
-- Workflow 页面已经使用 `topologyLocked` 控制定义编辑，历史面板已经按官方和个人来源分组。
+- 领域层仍使用 `topologyLocked` 区分官方与个人 Workflow；当前 Workflow Core 页面尚未展示本设计中的官方克隆、个人导入导出和来源分组操作。
 
 主要代码入口：
 
@@ -72,12 +72,12 @@
 - `apps/main-2.0/src/automation/engine/main/hub/workflow/agent-hub-workflow-clone.ts`
 - `apps/main-2.0/src/automation/engine/main/workflows/v2/workflow-v2-script-analysis.ts`
 - `apps/main-2.0/src/automation/engine/main/workflows/v2/workflow-v2-script-input.ts`
-- `apps/main-2.0/src/automation/engine/renderer/src/pages/workflow/WorkflowHistoryPanel.tsx`
-- `apps/main-2.0/src/automation/engine/renderer/src/pages/workflow/WorkflowPage.tsx`
+- `apps/main-2.0/src/renderer/src/features/automation/workflow-feature-page.tsx`
 - `apps/main-2.0/src/shared/ipc/automation.ts`
 - `apps/main-2.0/src/main/ipc/automation.ts`
 - `apps/main-2.0/src/preload/automation.ts`
-- `apps/main-2.0/src/automation/engine/renderer/src/app/services/workflow-service.ts`
+- `apps/main-2.0/src/main/services/workflow-portable-service.ts`
+- `apps/main-2.0/src/main/services/workflow-portable-filesystem.ts`
 
 ## 核心术语
 
@@ -512,7 +512,9 @@ export interface WorkflowImportPreview {
 - 用户主动再次发起导入或克隆仍然允许创建多个副本。
 - 导出先写入同目录临时文件，再以原子替换完成最终文件，避免留下半写 JSON。若目标已存在，覆盖必须由系统保存对话框明确确认。
 
-## UI 设计
+## 待重新接入的 UI 契约
+
+以下交互仍是产品契约，但当前 Workflow Core 页面尚未接入。后续实现应落在 `apps/main-2.0/src/renderer/src/features/automation/workflow-feature-page.tsx` 及其同层组件，不再恢复已删除的旧 Automation renderer 页面。
 
 ### Workflow 历史面板
 
@@ -578,7 +580,7 @@ interface WorkflowPortableService {
 - `apps/main-2.0/src/preload/automation.ts`：显式 preload API。
 - `apps/main-2.0/src/main/services/automation-service.ts`：组合主进程 Workflow 服务。
 - `apps/main-2.0/src/automation/engine/main/hub/workflow/`：克隆、导入、导出、来源和就绪领域逻辑。
-- `apps/main-2.0/src/automation/engine/renderer/src/app/services/workflow-service.ts`：renderer 服务接口。
+- `apps/main-2.0/src/renderer/src/features/automation/workflow-feature-page.tsx`：Workflow Core 页面与导入、导出、克隆交互入口。
 
 不要让 renderer 接收任意文件路径后自行读取。不要把主进程文件系统 API 暴露为通用读写接口。
 

@@ -6,11 +6,11 @@ import { skillSyncFilesFromMetadata, type RemoteSkill, type SkillSyncFile } from
 
 import {
   AGENT_SKILL_REGISTRY,
-  agentSkillDir,
   type SkillAgent,
   type SkillPortableScope,
   type SkillSource,
 } from "./agent-skill-registry";
+import { agentSkillDir } from "./agent-skill-paths";
 
 export type { SkillAgent, SkillInstallTarget, SkillPortableScope, SkillSource } from "./agent-skill-registry";
 
