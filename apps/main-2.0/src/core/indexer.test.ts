@@ -322,6 +322,31 @@ describe("indexer", () => {
     }
   });
 
+  it("skips unchanged active and archived Qwen sessions through source-scoped snapshots", async () => {
+    const store = createInMemoryStore();
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v2-qwen-skip-"));
+    try {
+      const activePath = writeQwenSession(homeDir, "active", "active question");
+      const archivePath = writeQwenSession(homeDir, "archived", "archived question", true);
+      const cold = await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir, includeQwenCode: true } });
+      expect(cold).toMatchObject({ indexed: 2, skipped: 0, total: 2 });
+
+      const snapshots = await store.listIndexedSessionFiles();
+      for (const filePath of [activePath, archivePath]) {
+        const snapshot = snapshots.find((item) => item.filePath === filePath)!;
+        fs.writeFileSync(filePath, "{not jsonl".padEnd(snapshot.fileSize, "x"));
+        fs.utimesSync(filePath, snapshot.fileMtimeMs / 1000, snapshot.fileMtimeMs / 1000);
+      }
+
+      const warm = await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir, includeQwenCode: true } });
+      expect(warm).toMatchObject({ indexed: 0, skipped: 2, total: 2 });
+      await expect(store.searchSessions({ query: "question", limit: 10 })).resolves.toHaveLength(2);
+    } finally {
+      await store.close();
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it("indexes a StepCode Claude variant when enabled after the native session was already indexed", async () => {
     const store = createInMemoryStore();
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-stepcode-claude-"));
@@ -1146,6 +1171,17 @@ function writeClaudeSession(homeDir: string, id: string, question: string): stri
       message: { role: "user", content: question },
     }),
   );
+  return filePath;
+}
+
+function writeQwenSession(homeDir: string, id: string, question: string, archived = false): string {
+  const chatsDir = path.join(homeDir, ".qwen", "projects", "project", "chats", ...(archived ? ["archive"] : []));
+  fs.mkdirSync(chatsDir, { recursive: true });
+  const filePath = path.join(chatsDir, `${id}.jsonl`);
+  fs.writeFileSync(filePath, [
+    { uuid: `${id}-user`, parentUuid: null, sessionId: id, timestamp: "2026-06-01T10:00:00Z", type: "user", cwd: "/repo", message: { role: "user", parts: [{ text: question }] } },
+    { uuid: `${id}-assistant`, parentUuid: `${id}-user`, sessionId: id, timestamp: "2026-06-01T10:01:00Z", type: "assistant", cwd: "/repo", message: { role: "model", parts: [{ text: "answer" }] } },
+  ].map((row) => JSON.stringify(row)).join("\n"));
   return filePath;
 }
 

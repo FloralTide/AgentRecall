@@ -2007,6 +2007,39 @@ function qwenToolResultCallId(row: Record<string, unknown>, parts: Record<string
   return stringField(functionResponse, "id") || stringField(toolCallResult, "callId") || stringField(toolCallResult, "id") || stringField(row, "uuid") || null;
 }
 
+const QWEN_ARTIFACT_SUBTYPES = new Set(["session_artifact_event", "session_artifact_snapshot"]);
+const QWEN_CONVERSATION_TYPES = new Set(["user", "assistant", "tool_result", "system"]);
+
+function qwenConversationLeaf(rows: Record<string, unknown>[]): Record<string, unknown> | undefined {
+  return [...rows].reverse().find((row) => {
+    const type = stringField(row, "type");
+    return QWEN_CONVERSATION_TYPES.has(type)
+      && Boolean(stringField(row, "uuid"))
+      && !(type === "system" && QWEN_ARTIFACT_SUBTYPES.has(stringField(row, "subtype")));
+  });
+}
+
+function qwenTokenBuckets(
+  usage: Record<string, unknown>,
+): Pick<TokenUsage, "inputTokens" | "outputTokens" | "cachedInputTokens" | "reasoningOutputTokens"> {
+  const promptTokens = Math.max(0, numberField(usage, "promptTokenCount"));
+  const candidateTokens = Math.max(0, numberField(usage, "candidatesTokenCount"));
+  const thoughtTokens = Math.max(0, numberField(usage, "thoughtsTokenCount"));
+  const rawTotalTokens = usage.totalTokenCount;
+  const hasAuthoritativeTotal = typeof rawTotalTokens === "number" && Number.isFinite(rawTotalTokens) && rawTotalTokens >= 0;
+  const cachedInputTokens = Math.min(Math.max(0, numberField(usage, "cachedContentTokenCount")), promptTokens);
+  const inputTokens = promptTokens - cachedInputTokens;
+  if (!hasAuthoritativeTotal) {
+    return { inputTokens, outputTokens: candidateTokens, cachedInputTokens, reasoningOutputTokens: thoughtTokens };
+  }
+  const targetTotalTokens = rawTotalTokens;
+  const boundedCachedInputTokens = Math.min(cachedInputTokens, targetTotalTokens);
+  const boundedInputTokens = Math.min(inputTokens, targetTotalTokens - boundedCachedInputTokens);
+  const outputBudget = targetTotalTokens - boundedInputTokens - boundedCachedInputTokens;
+  const reasoningOutputTokens = Math.min(thoughtTokens, outputBudget);
+  return { inputTokens: boundedInputTokens, outputTokens: outputBudget - reasoningOutputTokens, cachedInputTokens: boundedCachedInputTokens, reasoningOutputTokens };
+}
+
 function qwenTraceEvents(rows: Record<string, unknown>[]): SessionTraceEvent[] {
   const events: TraceEventDraft[] = [];
   for (const row of rows) {
@@ -2040,7 +2073,7 @@ function loadQwenCodeSessionFile(filePath: string, projectPath: string, stat: Vi
     if (records.has(uuid)) chainInvalid = true;
     records.set(uuid, row);
   }
-  const leaf = [...parsedRows].reverse().find((row) => row.type === "user" || row.type === "assistant" || row.type === "tool_result");
+  const leaf = qwenConversationLeaf(parsedRows);
   if (!leaf) return null;
   const chain: Record<string, unknown>[] = [];
   const visited = new Set<string>();
@@ -2063,10 +2096,7 @@ function loadQwenCodeSessionFile(filePath: string, projectPath: string, stat: Vi
   for (const row of activeRows) {
     const usage = objectField(row, "usageMetadata");
     if (!usage) continue;
-    const cachedInputTokens = numberField(usage, "cachedContentTokenCount");
-    const inputTokens = Math.max(0, numberField(usage, "promptTokenCount") - cachedInputTokens);
-    const outputTokens = numberField(usage, "candidatesTokenCount");
-    const reasoningOutputTokens = numberField(usage, "thoughtsTokenCount");
+    const { inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens } = qwenTokenBuckets(usage);
     const dedupeKey = stringField(row, "uuid");
     if (!dedupeKey) continue;
     putTokenEvent(usageEvents, tokenEvent(timestampMs(row.timestamp), dedupeKey, inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens));
@@ -2077,7 +2107,8 @@ function loadQwenCodeSessionFile(filePath: string, projectPath: string, stat: Vi
   const titleRecord = [...parsedRows].reverse().find((row) => row.subtype === "custom_title" && typeof objectField(row, "systemPayload")?.customTitle === "string");
   const title = stringField(objectField(titleRecord, "systemPayload"), "customTitle") || firstQuestionText || rawId;
   const chainTimestamp = activeRows.map((row) => timestampMs(row.timestamp)).find((timestamp) => timestamp > 0) || stat.mtimeMs;
-  return { session: createIndexedSession({ keyPrefix: "qwen", rawId, source: "qwen-code", projectPath: stringField(leaf, "cwd") || projectPath, filePath, originalTitle: title, firstQuestion: firstQuestionText, timestamp: chainTimestamp, tokenUsage: tokenUsageFromEvents(tokenEvents), stat }), messages, tokenEvents, traceEvents: qwenTraceEvents(activeRows) };
+  const gitBranch = [...activeRows].reverse().map((row) => stringField(row, "gitBranch")).find(Boolean) || null;
+  return { session: createIndexedSession({ keyPrefix: "qwen", rawId, source: "qwen-code", projectPath: stringField(leaf, "cwd") || projectPath, filePath, originalTitle: title, firstQuestion: firstQuestionText, timestamp: chainTimestamp, gitBranch, tokenUsage: tokenUsageFromEvents(tokenEvents), stat }), messages, tokenEvents, traceEvents: qwenTraceEvents(activeRows) };
 }
 
 function* loadQwenCodeSessionsIterator(root: string, options: SessionLoadOptions): Generator<LoadedSession> {

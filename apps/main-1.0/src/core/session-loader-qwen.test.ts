@@ -45,18 +45,51 @@ describe("Qwen Code sessions", () => {
     const loaded = loadDefaultSessions({ homeDir: syntheticHome, includeQwenCode: true }).filter((item) => item.session.source === "qwen-code"); expect(loaded).toHaveLength(1); expect(loaded[0].messages[0].content).toBe("runtime");
   });
 
-  it("keeps braces inside valid JSON text and normalizes cached tokens and creation time", () => {
+  it("keeps braces inside valid JSON text and honors authoritative Qwen token totals", () => {
     const root = fixture(); const chats = path.join(root, ".qwen", "projects", "project", "chats"); fs.mkdirSync(chats, { recursive: true });
     const createdAt = "2026-08-23T00:00:00.000Z"; const updatedAt = "2026-08-23T01:00:00.000Z";
     const user = record("u", null, "user", "keep }{ together", { timestamp: createdAt });
-    const assistant = record("a", "u", "assistant", "answer", { timestamp: updatedAt, usageMetadata: { promptTokenCount: 10, cachedContentTokenCount: 4, candidatesTokenCount: 3, thoughtsTokenCount: 2 } });
+    const assistant = record("a", "u", "assistant", "answer", { timestamp: updatedAt, usageMetadata: { promptTokenCount: 10, cachedContentTokenCount: 4, candidatesTokenCount: 3, thoughtsTokenCount: 2, totalTokenCount: 13 } });
     fs.writeFileSync(path.join(chats, "tokens.jsonl"), `${JSON.stringify(user)}\n${JSON.stringify(assistant)}\n`);
 
     const [loaded] = loadDefaultSessions({ homeDir: root, includeQwenCode: true });
     expect(loaded.messages.map((message) => message.content)).toEqual(["keep }{ together", "answer"]);
     expect(loaded.session.timestamp).toBe(Date.parse(createdAt));
+    expect(loaded.session.tokenUsage).toMatchObject({ inputTokens: 6, cachedInputTokens: 4, outputTokens: 1, reasoningOutputTokens: 2, totalTokens: 13 });
+    expect(loaded.tokenEvents).toEqual([{ timestamp: Date.parse(updatedAt), dedupeKey: "a", inputTokens: 6, outputTokens: 1, cachedInputTokens: 4, reasoningOutputTokens: 2, totalTokens: 13 }]);
+  });
+
+  it("keeps separated Qwen reasoning above the candidate count", () => {
+    const root = fixture(); const chats = path.join(root, ".qwen", "projects", "project", "chats"); fs.mkdirSync(chats, { recursive: true });
+    const rows = [record("u", null, "user", "question"), record("a", "u", "assistant", "answer", { usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 2, thoughtsTokenCount: 5, totalTokenCount: 17 } })];
+    fs.writeFileSync(path.join(chats, "separated-tokens.jsonl"), `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    const [loaded] = loadDefaultSessions({ homeDir: root, includeQwenCode: true });
+    expect(loaded.tokenEvents).toEqual([expect.objectContaining({ inputTokens: 10, cachedInputTokens: 0, outputTokens: 2, reasoningOutputTokens: 5, totalTokens: 17 })]);
+    expect(loaded.session.tokenUsage).toMatchObject({ inputTokens: 10, cachedInputTokens: 0, outputTokens: 2, reasoningOutputTokens: 5, totalTokens: 17 });
+  });
+
+  it("falls back to additive Qwen token totals when totalTokenCount is missing", () => {
+    const root = fixture(); const chats = path.join(root, ".qwen", "projects", "project", "chats"); fs.mkdirSync(chats, { recursive: true });
+    const rows = [record("u", null, "user", "question"), record("a", "u", "assistant", "answer", { usageMetadata: { promptTokenCount: 10, cachedContentTokenCount: 4, candidatesTokenCount: 3, thoughtsTokenCount: 2 } })];
+    fs.writeFileSync(path.join(chats, "token-fallback.jsonl"), `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    const [loaded] = loadDefaultSessions({ homeDir: root, includeQwenCode: true });
+    expect(loaded.tokenEvents).toEqual([expect.objectContaining({ inputTokens: 6, cachedInputTokens: 4, outputTokens: 3, reasoningOutputTokens: 2, totalTokens: 15 })]);
     expect(loaded.session.tokenUsage).toMatchObject({ inputTokens: 6, cachedInputTokens: 4, outputTokens: 3, reasoningOutputTokens: 2, totalTokens: 15 });
-    expect(loaded.tokenEvents).toEqual([{ timestamp: Date.parse(updatedAt), dedupeKey: "a", inputTokens: 6, outputTokens: 3, cachedInputTokens: 4, reasoningOutputTokens: 2, totalTokens: 15 }]);
+  });
+
+  it("uses trailing rewind metadata as the leaf and ignores artifact-only records", () => {
+    const root = fixture(); const chats = path.join(root, ".qwen", "projects", "project", "chats"); fs.mkdirSync(chats, { recursive: true });
+    const rows = [
+      record("u", null, "user", "question", { gitBranch: "main" }),
+      record("old", "u", "assistant", "discarded answer", { gitBranch: "discarded" }),
+      { uuid: "rewind", parentUuid: "u", sessionId: "qwen-1", timestamp: "2026-08-23T00:00:01.000Z", type: "system", subtype: "rewind", cwd: "C:/repo", gitBranch: "feature/qwen" },
+      { uuid: "model", parentUuid: "rewind", sessionId: "qwen-1", timestamp: "2026-08-23T00:00:02.000Z", type: "system", subtype: "session_model", cwd: "C:/repo", gitBranch: "feature/qwen", model: "qwen3-coder" },
+      { uuid: "artifact", parentUuid: "old", sessionId: "qwen-1", timestamp: "2026-08-23T00:00:03.000Z", type: "system", subtype: "session_artifact_snapshot", cwd: "C:/repo", gitBranch: "discarded" },
+    ];
+    fs.writeFileSync(path.join(chats, "rewind.jsonl"), `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    const [loaded] = loadDefaultSessions({ homeDir: root, includeQwenCode: true });
+    expect(loaded.messages.map((message) => message.content)).toEqual(["question"]);
+    expect(loaded.session.gitBranch).toBe("feature/qwen");
   });
 
   it("recovers glued objects when the first message contains object-like braces", () => {
