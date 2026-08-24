@@ -100,7 +100,7 @@ agent-recall-v2
 
 启动后应用会常驻菜单栏或系统托盘，并自动准备本地数据服务，不需要另外安装 PostgreSQL。macOS 上执行 `agent-recall-v2 install-app` 可以生成本地 `agent-recall-v2.app`，之后直接从 Launchpad / Spotlight / Dock 打开。更新执行 `agent-recall-v2 --update` 即可，App 内也可以在 **设置 → 关于** 检查更新。
 
-v2 的命令、应用数据、数据库和更新缓存都与 v1 分开，当前不会读取或导入 v1 数据。两者可以同时安装并运行。连接 MCP 客户端时，v2 Gateway 使用统一的 `agent-recall` 入口。完整的安装、更新、回滚和卸载说明见 [Install.md](./Install.md)。
+v2 的命令、应用数据、数据库和更新缓存都与 v1 分开，默认不会自动读取 v1 数据；如需迁移，可在 **设置 → 关于 → V1 数据迁移** 中手动导入。两者可以同时安装并运行。连接 MCP 客户端时，v2 Gateway 使用统一的 `agent-recall` 入口。完整的安装、更新、回滚和卸载说明见 [Install.md](./Install.md)。
 
 > 更详细的使用说明请查看 [AgentRecall v2 Guide](./docs/v2/guide.md)。
 
