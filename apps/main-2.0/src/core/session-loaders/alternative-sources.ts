@@ -654,8 +654,26 @@ function qwenRows(filePath: string): unknown[] {
   for (const line of text.split(/\r?\n/u)) {
     const trimmed = line.trim(); if (!trimmed) continue;
     try { rows.push(JSON.parse(trimmed)); continue; } catch { /* a malformed or glued line may still contain valid objects */ }
-    const parts = trimmed.split(/\}\s*(?=\{)/u).map((part, index, all) => index < all.length - 1 ? `${part}}` : part);
-    for (const part of parts) { try { rows.push(JSON.parse(part)); } catch { /* malformed/incomplete lines are ignored */ } }
+    let start = -1;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = 0; index < trimmed.length; index += 1) {
+      const character = trimmed[index];
+      if (start < 0) {
+        if (character === "{") { start = index; depth = 1; }
+        continue;
+      }
+      if (escaped) { escaped = false; continue; }
+      if (inString && character === "\\") { escaped = true; continue; }
+      if (character === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (character === "{") depth += 1;
+      else if (character === "}" && --depth === 0) {
+        try { rows.push(JSON.parse(trimmed.slice(start, index + 1))); } catch { /* malformed object */ }
+        start = -1;
+      }
+    }
   }
   return rows;
 }
@@ -689,7 +707,7 @@ function loadQwenFile(filePath: string, projectPath: string, stat = safeStat(fil
   const tokenEvents: TokenUsageEvent[] = [];
   for (const row of activeRows) { const usage = objectField(row, "usageMetadata"); if (!usage) continue; const cachedInputTokens = numberField(usage, "cachedContentTokenCount"); const inputTokens = Math.max(0, numberField(usage, "promptTokenCount") - cachedInputTokens); const outputTokens = numberField(usage, "candidatesTokenCount"); const reasoningOutputTokens = numberField(usage, "thoughtsTokenCount"); tokenEvents.push({ timestamp: timestampMs(unknownField(row, "timestamp")), dedupeKey: stringField(row, "uuid"), inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens, totalTokens: inputTokens + outputTokens + cachedInputTokens + reasoningOutputTokens }); }
   const rawId = path.basename(filePath, ".jsonl"); const question = cleanTitle(firstQuestion(messages));
-  const titleRecord = rows.find((row) => row.subtype === "custom_title");
+  const titleRecord = [...rows].reverse().find((row) => row.subtype === "custom_title" && typeof objectField(row, "systemPayload")?.customTitle === "string");
   const title = stringField(objectField(titleRecord, "systemPayload"), "customTitle") || question || rawId;
   const chainTimestamp = activeRows.map((row) => timestampMs(unknownField(row, "timestamp"))).find((timestamp) => timestamp > 0) || stat.mtimeMs;
   return { session: createIndexedSession({ keyPrefix: "qwen", rawId, source: "qwen-code", projectPath: stringField(leaf, "cwd") || projectPath, filePath, originalTitle: title, firstQuestion: question, timestamp: chainTimestamp, tokenUsage: tokenUsageFromEvents(tokenEvents), stat }), messages, tokenEvents, traceEvents: qwenTraces(activeRows) };

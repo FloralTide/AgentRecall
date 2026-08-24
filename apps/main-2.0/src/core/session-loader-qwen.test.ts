@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import os from "node:os";
+import * as os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadDefaultSessions } from "./session-loader";
@@ -7,6 +7,8 @@ import { loadDefaultSessions } from "./session-loader";
 const roots: string[] = [];
 const originalRuntimeDir = process.env.QWEN_RUNTIME_DIR;
 const originalQwenHome = process.env.QWEN_HOME;
+const originalHome = process.env.HOME;
+const originalUserProfile = process.env.USERPROFILE;
 beforeEach(() => {
   delete process.env.QWEN_RUNTIME_DIR;
   delete process.env.QWEN_HOME;
@@ -17,6 +19,10 @@ afterEach(() => {
   else process.env.QWEN_RUNTIME_DIR = originalRuntimeDir;
   if (originalQwenHome === undefined) delete process.env.QWEN_HOME;
   else process.env.QWEN_HOME = originalQwenHome;
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
+  if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = originalUserProfile;
   vi.restoreAllMocks();
 });
 function fixture(): string { const root = fs.mkdtempSync(path.join(os.tmpdir(), "agentrecall-qwen-v2-")); roots.push(root); return root; }
@@ -47,6 +53,32 @@ describe("Qwen Code sessions", () => {
     expect(loaded.session.timestamp).toBe(Date.parse(createdAt));
     expect(loaded.session.tokenUsage).toMatchObject({ inputTokens: 6, cachedInputTokens: 4, outputTokens: 3, reasoningOutputTokens: 2, totalTokens: 15 });
     expect(loaded.tokenEvents).toEqual([{ timestamp: Date.parse(updatedAt), dedupeKey: "a", inputTokens: 6, outputTokens: 3, cachedInputTokens: 4, reasoningOutputTokens: 2, totalTokens: 15 }]);
+  });
+
+  it("recovers glued objects when the first message contains object-like braces", () => {
+    const root = fixture(); const chats = path.join(root, ".qwen", "projects", "project", "chats"); fs.mkdirSync(chats, { recursive: true });
+    const first = record("first", null, "user", "keep }{ together");
+    const second = record("second", "first", "assistant", "second");
+    fs.writeFileSync(path.join(chats, "glued.jsonl"), `${JSON.stringify(first)}${JSON.stringify(second)}\n`);
+    const [loaded] = loadDefaultSessions({ homeDir: root, includeQwenCode: true });
+    expect(loaded.messages.map((message) => message.content)).toEqual(["keep }{ together", "second"]);
+  });
+
+  it("uses the latest custom title", () => {
+    const root = fixture(); const chats = path.join(root, ".qwen", "projects", "project", "chats"); fs.mkdirSync(chats, { recursive: true });
+    const rows = [record("user", null, "user", "question"), { type: "system", subtype: "custom_title", systemPayload: { customTitle: "Old title" } }, { type: "system", subtype: "custom_title", systemPayload: { customTitle: "Latest title" } }];
+    fs.writeFileSync(path.join(chats, "titles.jsonl"), `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    const [loaded] = loadDefaultSessions({ homeDir: root, includeQwenCode: true });
+    expect(loaded.session.originalTitle).toBe("Latest title");
+  });
+
+  it("expands a QWEN_RUNTIME_DIR tilde path", () => {
+    const fakeHome = fixture(); const root = fixture(); process.env.HOME = fakeHome; process.env.USERPROFILE = fakeHome;
+    const chats = path.join(fakeHome, "qwen-runtime", "nested", "projects", "project", "chats"); fs.mkdirSync(chats, { recursive: true });
+    fs.writeFileSync(path.join(chats, "tilde.jsonl"), JSON.stringify(record("tilde", null, "user", "tilde")));
+    process.env.QWEN_RUNTIME_DIR = "~\\qwen-runtime\\nested";
+    const loaded = loadDefaultSessions({ homeDir: root, includeQwenCode: true }).filter((item) => item.session.source === "qwen-code");
+    expect(loaded).toHaveLength(1); expect(loaded[0].messages[0].content).toBe("tilde");
   });
 
   it("uses QWEN_HOME when runtime is unset even with an explicit homeDir", () => {

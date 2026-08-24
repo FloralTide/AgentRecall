@@ -105,7 +105,14 @@ function resolveKimiCodeRoot(homeDir: string, options: SessionLoadOptions): stri
 }
 
 function resolveQwenCodeRoot(homeDir: string): string {
-  return process.env.QWEN_RUNTIME_DIR?.trim() || process.env.QWEN_HOME?.trim() || path.join(homeDir, QWEN_DIR);
+  const configured = process.env.QWEN_RUNTIME_DIR?.trim() || process.env.QWEN_HOME?.trim();
+  if (!configured) return path.join(homeDir, QWEN_DIR);
+  const expanded = configured === "~"
+    ? os.homedir()
+    : configured.startsWith("~/") || configured.startsWith("~\\")
+      ? path.join(os.homedir(), ...configured.slice(2).split(/[\\/]+/u).filter(Boolean))
+      : configured;
+  return path.resolve(expanded);
 }
 
 interface CodexSessionMeta {

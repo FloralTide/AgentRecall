@@ -63,7 +63,14 @@ const KIMI_LEGACY_DIR = ".kimi";
 const QWEN_DIR = ".qwen";
 
 function resolveQwenCodeRoot(homeDir: string): string {
-  return process.env.QWEN_RUNTIME_DIR?.trim() || process.env.QWEN_HOME?.trim() || path.join(homeDir, QWEN_DIR);
+  const configured = process.env.QWEN_RUNTIME_DIR?.trim() || process.env.QWEN_HOME?.trim();
+  if (!configured) return path.join(homeDir, QWEN_DIR);
+  const expanded = configured === "~"
+    ? os.homedir()
+    : configured.startsWith("~/") || configured.startsWith("~\\")
+      ? path.join(os.homedir(), ...configured.slice(2).split(/[\\/]+/u).filter(Boolean))
+      : configured;
+  return path.resolve(expanded);
 }
 const TRAE_DIR_NAMES = [".trae", ".trae-cn"] as const;
 const CODEX_WORKSPACE_PLACEHOLDER = /^<[^>]+>$/u;
@@ -1970,9 +1977,25 @@ function qwenJsonlRows(filePath: string): unknown[] {
       rows.push(JSON.parse(trimmed));
       continue;
     } catch { /* a malformed or glued line may still contain valid objects */ }
-    const candidates = trimmed.split(/\}\s*(?=\{)/u).map((part, index, parts) => index < parts.length - 1 ? `${part}}` : part);
-    for (const candidate of candidates) {
-      try { rows.push(JSON.parse(candidate)); } catch { /* malformed or incomplete tail */ }
+    let start = -1;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = 0; index < trimmed.length; index += 1) {
+      const character = trimmed[index];
+      if (start < 0) {
+        if (character === "{") { start = index; depth = 1; }
+        continue;
+      }
+      if (escaped) { escaped = false; continue; }
+      if (inString && character === "\\") { escaped = true; continue; }
+      if (character === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (character === "{") depth += 1;
+      else if (character === "}" && --depth === 0) {
+        try { rows.push(JSON.parse(trimmed.slice(start, index + 1))); } catch { /* malformed object */ }
+        start = -1;
+      }
     }
   }
   return rows;
@@ -2041,7 +2064,7 @@ function loadQwenCodeSessionFile(filePath: string, projectPath: string, stat: Vi
   }
   const rawId = path.basename(filePath, ".jsonl");
   const firstQuestionText = cleanTitle(firstQuestion(messages));
-  const titleRecord = parsedRows.find((row) => row.subtype === "custom_title");
+  const titleRecord = [...parsedRows].reverse().find((row) => row.subtype === "custom_title" && typeof objectField(row, "systemPayload")?.customTitle === "string");
   const title = stringField(objectField(titleRecord, "systemPayload"), "customTitle") || firstQuestionText || rawId;
   const chainTimestamp = activeRows.map((row) => timestampMs(row.timestamp)).find((timestamp) => timestamp > 0) || stat.mtimeMs;
   return { session: createIndexedSession({ keyPrefix: "qwen", rawId, source: "qwen-code", projectPath: stringField(leaf, "cwd") || projectPath, filePath, originalTitle: title, firstQuestion: firstQuestionText, timestamp: chainTimestamp, tokenUsage: tokenUsageFromEvents(usageEvents), stat }), messages, tokenEvents: usageEvents, traceEvents: qwenTraceEvents(activeRows) };
