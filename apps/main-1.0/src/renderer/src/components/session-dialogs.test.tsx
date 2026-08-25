@@ -212,6 +212,23 @@ describe("session dialogs", () => {
     expect(onConfirm).toHaveBeenCalledOnce();
   });
 
+  it("warns that deleting a Pi session removes the original session file", async () => {
+    await act(async () => root.render(createElement(DeleteSessionDialog, {
+      session: { ...session, source: "pi-cli", filePath: "/synthetic/pi-session.jsonl" },
+      cascadeCount: 1,
+      hasLiveSession: false,
+      isOpen: false,
+      blockedMessage: null,
+      language: "zh",
+      deleting: false,
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    })));
+
+    expect(container.textContent).toContain("这会永久删除该 Pi 会话文件");
+    expect(container.textContent).toContain("/synthetic/pi-session.jsonl");
+  });
+
   it("requires exact text for related sessions and clears it when the candidate changes", async () => {
     const props = {
       cascadeCount: 2,

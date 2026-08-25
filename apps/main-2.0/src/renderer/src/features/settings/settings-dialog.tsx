@@ -704,7 +704,7 @@ export function SettingsDialog({
                   <div className="settings-field-text">
                     <span className="settings-field-title">Include Pi</span>
                     <span className="settings-field-sub">
-                      {l("Indexes local Pi sessions read-only.", "以只读方式索引本地 Pi 会话。")}
+                      {l("Indexes local Pi sessions from ~/.pi/agent/sessions.", "从 ~/.pi/agent/sessions 索引本地 Pi 会话。")}
                     </span>
                   </div>
                   <input

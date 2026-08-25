@@ -2270,7 +2270,7 @@ function registerIpc(): void {
     if (confirmed && !confirmationFingerprint) {
       throw new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
     }
-    if (session?.source === "pi-cli" || session?.source === "workbuddy-cli" || session?.source === "kimi-cli") {
+    if (session?.source === "workbuddy-cli" || session?.source === "kimi-cli") {
       throw new Error(`${sessionSourceDescriptor(session.source).label} session source files are read-only.`);
     }
     if (session && !canDeleteSessionLocally(session)) {

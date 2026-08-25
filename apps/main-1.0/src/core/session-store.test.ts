@@ -1817,7 +1817,7 @@ describe("SessionStore", () => {
     },
   );
 
-  it("rejects Pi source deletion while record-only source pruning keeps the file", () => {
+  it("deletes a Pi session file and its index", () => {
     const store = createInMemoryStore();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-delete-pi-"));
     const filePath = path.join(dir, "pi-session.jsonl");
@@ -1832,15 +1832,13 @@ describe("SessionStore", () => {
       messages,
     );
 
-    expect(() => store.deleteSession("pi:abc")).toThrow("Pi session source files are read-only.");
-    expect(fs.existsSync(filePath)).toBe(true);
-    expect(store.getSession("pi:abc")).not.toBeNull();
-
-    store.deleteSessionsBySource(["pi-cli"]);
-
-    expect(store.getSession("pi:abc")).toBeNull();
-    expect(fs.existsSync(filePath)).toBe(true);
-    fs.rmSync(dir, { recursive: true, force: true });
+    try {
+      expect(store.deleteSession("pi:abc")).toBe(true);
+      expect(fs.existsSync(filePath)).toBe(false);
+      expect(store.getSession("pi:abc")).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("rejects WorkBuddy source deletion while record-only source pruning keeps the file", () => {

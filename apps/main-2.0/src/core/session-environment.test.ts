@@ -9,4 +9,12 @@ describe("session environment", () => {
       source: "kimi-cli",
     })).toBe(false);
   });
+
+  it("allows deleting local Pi session files", () => {
+    expect(canDeleteSessionLocally({
+      environmentKind: "local",
+      environmentId: "local",
+      source: "pi-cli",
+    })).toBe(true);
+  });
 });

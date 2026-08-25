@@ -201,8 +201,8 @@ export class SessionCatalogService {
   async delete(sessionKey: string, options?: unknown): Promise<boolean> {
     const normalizedOptions = normalizeSessionDeleteOptions(options);
     const session = await this.dependencies.store.getSession(sessionKey);
-    if (session?.source === "pi-cli" || session?.source === "workbuddy-cli" || session?.source === "kimi-cli") {
-      const label = session.source === "pi-cli" ? "Pi" : session.source === "workbuddy-cli" ? "WorkBuddy" : "Kimi Code";
+    if (session?.source === "workbuddy-cli" || session?.source === "kimi-cli") {
+      const label = session.source === "workbuddy-cli" ? "WorkBuddy" : "Kimi Code";
       throw new Error(`${label} session source files are read-only.`);
     }
     if (session && !canDeleteSessionLocally(session)) {

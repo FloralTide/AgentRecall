@@ -637,7 +637,7 @@ describe("SessionStore PostgreSQL facade", () => {
     }
   });
 
-  it("rejects Pi source deletion while record-only source pruning keeps the file", async () => {
+  it("deletes a Pi session file and its index", async () => {
     const store = createStore();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-delete-pi-"));
     const filePath = path.join(dir, "pi-session.jsonl");
@@ -652,15 +652,13 @@ describe("SessionStore PostgreSQL facade", () => {
       messages,
     );
 
-    await expect(store.deleteSession("pi:session-a")).rejects.toThrow("Pi session source files are read-only.");
-    expect(fs.existsSync(filePath)).toBe(true);
-    await expect(store.getSession("pi:session-a")).resolves.not.toBeNull();
-
-    await store.deleteSessionsBySource(["pi-cli"]);
-
-    await expect(store.getSession("pi:session-a")).resolves.toBeNull();
-    expect(fs.existsSync(filePath)).toBe(true);
-    fs.rmSync(dir, { recursive: true, force: true });
+    try {
+      await expect(store.deleteSession("pi:session-a")).resolves.toBe(true);
+      expect(fs.existsSync(filePath)).toBe(false);
+      await expect(store.getSession("pi:session-a")).resolves.toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("keeps WorkBuddy source files and indexed records when direct deletion is attempted", async () => {

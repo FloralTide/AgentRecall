@@ -64,9 +64,9 @@ describe("SessionBulkDeleteService", () => {
       sessionKeys: [...targets.map((item) => item.sessionKey), "missing"],
       liveSessionKeys: ["live"], inactiveBefore: 200, protectFavorites: false,
     });
-    expect(preview.deletableCount).toBe(1);
+    expect(preview.deletableCount).toBe(2);
     expect(preview.skipped.map((item) => item.reason)).toEqual([
-      "live", "favorite", "recent", "read-only", "read-only", "read-only",
+      "live", "favorite", "recent", "read-only", "read-only",
       "shared-database", "shared-database", "shared-database", "shared-database", "not-found",
     ]);
     expect(store.getSessionDeletionTargets).toHaveBeenCalledTimes(1);
@@ -296,7 +296,7 @@ describe("SessionBulkDeleteService", () => {
     const targets = [
       target("favorite", { favorited: true }),
       target("recent", { lastActivityAt: 500 }),
-      target("pi", { source: "pi-cli" }),
+      target("kimi", { source: "kimi-cli" }),
       target("remote", { environmentId: "ssh-dev", environmentKind: "ssh" }),
       target("shared", { source: "hermes" }),
     ];
