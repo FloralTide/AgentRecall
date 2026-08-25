@@ -1844,10 +1844,59 @@ function kimiCodeMessages(rows: unknown[]): SessionMessage[] {
     .map((draft, index) => messageFromParts(draft.role, draft.content, draft.timestamp, index));
 }
 
-function kimiCodeMainWireIdentity(filePath: string, root: string): { sessionId: string; sessionDir: string } | null {
+interface KimiCodeWireIdentity {
+  sessionId: string;
+  sessionDir: string;
+  agentId: string;
+}
+
+function kimiCodeWireIdentity(filePath: string, root: string): KimiCodeWireIdentity | null {
   const parts = path.relative(root, filePath).split(/[\\/]+/u);
-  if (parts.length !== 6 || parts[0] !== "sessions" || parts[3] !== "agents" || parts[4] !== "main" || parts[5] !== "wire.jsonl") return null;
-  return { sessionId: parts[2], sessionDir: path.dirname(path.dirname(path.dirname(filePath))) };
+  if (
+    parts.length !== 6
+    || parts[0] !== "sessions"
+    || parts[3] !== "agents"
+    || !parts[2]
+    || !parts[4]
+    || parts[5] !== "wire.jsonl"
+  ) return null;
+  return {
+    sessionId: parts[2],
+    sessionDir: path.dirname(path.dirname(path.dirname(filePath))),
+    agentId: parts[4],
+  };
+}
+
+function kimiCodeAgentRawId(sessionId: string, agentId: string): string {
+  return agentId === "main" ? sessionId : `${sessionId}:subagent:${agentId}`;
+}
+
+function kimiCodeParentAgentId(agentMeta: Record<string, unknown>): string {
+  return stringField(objectField(agentMeta, "labels"), "parentAgentId")
+    || stringField(agentMeta, "parentAgentId");
+}
+
+function kimiCodeSubagentParentSessionId(
+  state: Record<string, unknown>,
+  sessionId: string,
+  agentId: string,
+): string | null {
+  const agents = objectField(state, "agents");
+  const visited = new Set([agentId]);
+  let currentAgentId = agentId;
+  let directParentAgentId = "";
+  while (currentAgentId !== "main") {
+    const agentMeta = objectField(agents, currentAgentId);
+    if (!agentMeta) return null;
+    const parentAgentId = kimiCodeParentAgentId(agentMeta);
+    if ((stringField(agentMeta, "type") !== "sub" && !parentAgentId) || !parentAgentId || visited.has(parentAgentId)) {
+      return null;
+    }
+    if (!directParentAgentId) directParentAgentId = parentAgentId;
+    visited.add(parentAgentId);
+    currentAgentId = parentAgentId;
+  }
+  return kimiCodeAgentRawId(sessionId, directParentAgentId);
 }
 
 function kimiCodeTitle(state: Record<string, unknown>, question: string, rawId: string): string {
@@ -1858,30 +1907,36 @@ function kimiCodeTitle(state: Record<string, unknown>, question: string, rawId: 
 
 function loadKimiCodeSessionFile(
   filePath: string,
-  root: string,
+  identity: KimiCodeWireIdentity,
   indexEntry: KimiCodeIndexEntry | undefined,
   state: Record<string, unknown>,
   stat: VirtualSessionFileStat,
+  parentSessionId: string | null,
 ): LoadedSession | null {
-  const identity = kimiCodeMainWireIdentity(filePath, root);
-  if (!identity) return null;
+  const isSubagent = identity.agentId !== "main";
+  if (isSubagent && !parentSessionId) return null;
   const rows = readJsonl(filePath);
   const messages = kimiCodeMessages(rows);
   if (messages.length === 0) return null;
   const question = cleanTitle(firstQuestion(messages));
   const projectPath = stringField(state, "cwd") || stringField(state, "workDir") || indexEntry?.workDir || "";
-  const timestamp = parseTimestampMs(state.updatedAt) || parseTimestampMs(state.createdAt) || stat.mtimeMs;
+  const timestamp = isSubagent
+    ? stat.mtimeMs
+    : parseTimestampMs(state.updatedAt) || parseTimestampMs(state.createdAt) || stat.mtimeMs;
+  const rawId = kimiCodeAgentRawId(identity.sessionId, identity.agentId);
   return {
     session: createIndexedSession({
       keyPrefix: "kimi",
-      rawId: identity.sessionId,
+      rawId,
       source: "kimi-cli",
       projectPath,
       filePath,
-      originalTitle: kimiCodeTitle(state, question, identity.sessionId),
+      originalTitle: isSubagent ? question || identity.agentId : kimiCodeTitle(state, question, identity.sessionId),
       firstQuestion: question,
       timestamp,
       stat,
+      isSubagent,
+      parentSessionId,
     }),
     messages,
   };
@@ -1928,28 +1983,66 @@ function* loadKimiSessionsIterator(legacyRoot: string, codeRoot: string, options
 
   const indexPath = path.join(codeRoot, "session_index.jsonl");
   const sessionIndex = readKimiCodeSessionIndex(codeRoot);
-  const candidates = new Map<string, { sessionId: string; sessionDir: string; filePath: string }>();
+  const candidates = new Map<string, {
+    sessionId: string;
+    sessionDir: string;
+    agentWirePaths: Map<string, string>;
+  }>();
   for (const entry of sessionIndex.values()) {
     const filePath = path.join(entry.sessionDir, "agents", "main", "wire.jsonl");
-    if (fs.existsSync(filePath)) candidates.set(path.resolve(entry.sessionDir), { sessionId: entry.sessionId, sessionDir: entry.sessionDir, filePath });
+    if (fs.existsSync(filePath)) {
+      candidates.set(path.resolve(entry.sessionDir), {
+        sessionId: entry.sessionId,
+        sessionDir: entry.sessionDir,
+        agentWirePaths: new Map([["main", filePath]]),
+      });
+    }
   }
   for (const filePath of walkJsonlFiles(path.join(codeRoot, "sessions"))) {
-    const identity = kimiCodeMainWireIdentity(filePath, codeRoot);
-    if (identity) candidates.set(path.resolve(identity.sessionDir), { ...identity, filePath });
+    const identity = kimiCodeWireIdentity(filePath, codeRoot);
+    if (!identity) continue;
+    const candidateKey = path.resolve(identity.sessionDir);
+    const candidate = candidates.get(candidateKey) ?? {
+      sessionId: identity.sessionId,
+      sessionDir: identity.sessionDir,
+      agentWirePaths: new Map<string, string>(),
+    };
+    candidate.agentWirePaths.set(identity.agentId, filePath);
+    candidates.set(candidateKey, candidate);
   }
-  for (const candidate of [...candidates.values()].sort((left, right) => left.filePath.localeCompare(right.filePath))) {
+  for (const candidate of [...candidates.values()].sort((left, right) => left.sessionDir.localeCompare(right.sessionDir))) {
+    if (!candidate.agentWirePaths.has("main")) continue;
     const statePath = path.join(candidate.sessionDir, "state.json");
     const state = readJsonObject(statePath) ?? {};
     const custom = objectField(state, "custom");
     const importedLegacyId = stringField(custom, "kimi_cli_session_id");
     if (importedLegacyId && legacySessionIds.has(importedLegacyId)) continue;
-    const stat = safeStat(candidate.filePath);
     const dependencyMtimeMs = Math.max(safeStat(indexPath).mtimeMs, safeStat(statePath).mtimeMs);
-    if (shouldSkipFile(options, candidate.filePath, stat, dependencyMtimeMs)) continue;
     const indexed = sessionIndex.get(candidate.sessionId);
     const indexEntry = indexed && path.resolve(indexed.sessionDir) === path.resolve(candidate.sessionDir) ? indexed : undefined;
-    const loaded = loadKimiCodeSessionFile(candidate.filePath, codeRoot, indexEntry, state, stat);
-    if (loaded) yield loaded;
+    const agentWires = [...candidate.agentWirePaths]
+      .sort(([left], [right]) => {
+        if (left === "main") return right === "main" ? 0 : -1;
+        if (right === "main") return 1;
+        return left.localeCompare(right);
+      });
+    for (const [agentId, filePath] of agentWires) {
+      const stat = safeStat(filePath);
+      if (shouldSkipFile(options, filePath, stat, dependencyMtimeMs)) continue;
+      const identity = kimiCodeWireIdentity(filePath, codeRoot);
+      if (!identity) continue;
+      const loaded = loadKimiCodeSessionFile(
+        filePath,
+        identity,
+        indexEntry,
+        state,
+        stat,
+        agentId === "main"
+          ? null
+          : kimiCodeSubagentParentSessionId(state, candidate.sessionId, agentId),
+      );
+      if (loaded) yield loaded;
+    }
   }
 }
 

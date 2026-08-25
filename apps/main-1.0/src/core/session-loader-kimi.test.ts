@@ -21,6 +21,7 @@ function writeKimiCodeSession(root: string, workDirKey: string, sessionId: strin
   title?: string;
   workDir?: string;
   custom?: Record<string, unknown>;
+  agents?: Record<string, unknown>;
   indexed?: boolean;
   truncatedTail?: boolean;
 } = {}): string {
@@ -31,6 +32,7 @@ function writeKimiCodeSession(root: string, workDirKey: string, sessionId: strin
     updatedAt: 1_700_000_010_000,
     ...(options.workDir ? { workDir: options.workDir } : {}),
     ...(options.custom ? { custom: options.custom } : {}),
+    ...(options.agents ? { agents: options.agents } : {}),
   });
   write(wirePath, [
     { type: "metadata", protocol_version: "1.5", created_at: 1_700_000_000_000 },
@@ -45,6 +47,24 @@ function writeKimiCodeSession(root: string, workDirKey: string, sessionId: strin
     fs.mkdirSync(path.dirname(indexPath), { recursive: true });
     fs.appendFileSync(indexPath, `${JSON.stringify({ sessionId, sessionDir, workDir: options.workDir ?? "D:/indexed-project" })}\n`, "utf8");
   }
+  return wirePath;
+}
+
+function writeKimiCodeAgent(
+  root: string,
+  workDirKey: string,
+  sessionId: string,
+  agentId: string,
+  prompt: string,
+  response: string,
+): string {
+  const wirePath = path.join(root, "sessions", workDirKey, sessionId, "agents", agentId, "wire.jsonl");
+  write(wirePath, [
+    { type: "context.append_message", message: { role: "user", content: [{ type: "text", text: prompt }] }, time: 1_700_000_020_000 },
+    { type: "context.append_loop_event", event: { type: "step.begin", uuid: `${agentId}-step`, turnId: `${agentId}-turn`, step: 0 }, time: 1_700_000_021_000 },
+    { type: "context.append_loop_event", event: { type: "content.part", stepUuid: `${agentId}-step`, part: { type: "text", text: response } }, time: 1_700_000_022_000 },
+    { type: "context.append_loop_event", event: { type: "step.end", uuid: `${agentId}-step`, turnId: `${agentId}-turn`, step: 0 }, time: 1_700_000_023_000 },
+  ]);
   return wirePath;
 }
 
@@ -93,6 +113,80 @@ describe("Kimi Code session loading", () => {
     expect(loaded.session.originalTitle).toBe("Renamed Kimi session");
     expect(loaded.session.projectPath).toBe("D:/new-kimi-project");
     expect(loaded.messages.map((message) => message.content)).toEqual(["Hello Kimi Code", "Hello from the new engine"]);
+  });
+
+  it("indexes registered Kimi Code subagents with stable parent relationships", () => {
+    const root = home();
+    const codeRoot = path.join(root, ".kimi-code");
+    const workDirKey = "wd_subagents_123456789abc";
+    const sessionId = "session-with-subagents";
+    writeKimiCodeSession(codeRoot, workDirKey, sessionId, {
+      workDir: "D:/kimi-subagents",
+      agents: {
+        main: { type: "main" },
+        explorer: { type: "sub", parentAgentId: "main" },
+        nested: {
+          type: "sub",
+          parentAgentId: "main",
+          labels: { parentAgentId: "explorer" },
+        },
+        independent: { type: "independent" },
+        orphan: { type: "sub", parentAgentId: "missing-agent" },
+      },
+    });
+    const explorerWire = writeKimiCodeAgent(codeRoot, workDirKey, sessionId, "explorer", "Explore the parser", "Parser findings");
+    const nestedWire = writeKimiCodeAgent(codeRoot, workDirKey, sessionId, "nested", "Inspect the fixture", "Fixture findings");
+    writeKimiCodeAgent(codeRoot, workDirKey, sessionId, "independent", "Independent prompt", "Independent result");
+    writeKimiCodeAgent(codeRoot, workDirKey, sessionId, "orphan", "Orphan prompt", "Orphan result");
+
+    const loaded = loadDefaultSessions({ homeDir: root, includeKimiCli: true });
+
+    expect(loaded.map((item) => item.session.rawId)).toEqual([
+      sessionId,
+      `${sessionId}:subagent:explorer`,
+      `${sessionId}:subagent:nested`,
+    ]);
+    expect(loaded.slice(1).map((item) => ({
+      filePath: item.session.filePath,
+      isSubagent: item.session.isSubagent,
+      parentSessionId: item.session.parentSessionId,
+      messages: item.messages.map((message) => message.content),
+    }))).toEqual([
+      {
+        filePath: explorerWire,
+        isSubagent: true,
+        parentSessionId: sessionId,
+        messages: ["Explore the parser", "Parser findings"],
+      },
+      {
+        filePath: nestedWire,
+        isSubagent: true,
+        parentSessionId: `${sessionId}:subagent:explorer`,
+        messages: ["Inspect the fixture", "Fixture findings"],
+      },
+    ]);
+  });
+
+  it("applies incremental skip decisions to each Kimi Code agent wire", () => {
+    const root = home();
+    const codeRoot = path.join(root, ".kimi-code");
+    const workDirKey = "wd_incremental_123456789abc";
+    const sessionId = "incremental-session";
+    const mainWire = writeKimiCodeSession(codeRoot, workDirKey, sessionId, {
+      agents: {
+        main: { type: "main" },
+        worker: { type: "sub", parentAgentId: "main" },
+      },
+    });
+    writeKimiCodeAgent(codeRoot, workDirKey, sessionId, "worker", "Updated child", "Child result");
+
+    const loaded = loadDefaultSessions({
+      homeDir: root,
+      includeKimiCli: true,
+      shouldSkipFile: (filePath) => filePath === mainWire,
+    });
+
+    expect(loaded.map((item) => item.session.rawId)).toEqual([`${sessionId}:subagent:worker`]);
   });
 
   it("falls back to filesystem discovery and the indexed work directory", () => {
