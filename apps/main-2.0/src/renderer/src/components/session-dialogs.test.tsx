@@ -157,6 +157,23 @@ describe("session dialogs", () => {
     expect(onConfirm).toHaveBeenCalledOnce();
   });
 
+  it("warns that deleting a Pi session removes the original session file", async () => {
+    await act(async () => root.render(createElement(DeleteSessionDialog, {
+      session: { ...session("pi:local"), source: "pi-cli", filePath: "/fixtures/pi-session.jsonl" },
+      cascadeCount: 1,
+      hasLiveSession: false,
+      isOpen: false,
+      blockedMessage: null,
+      language: "zh",
+      deleting: false,
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    })));
+
+    expect(container.textContent).toContain("这会永久删除该 Pi 会话文件");
+    expect(container.textContent).toContain("/fixtures/pi-session.jsonl");
+  });
+
   it("keeps an unknown preview error blocked without asking for typed text", async () => {
     await act(async () => root.render(createElement(DeleteSessionDialog, {
       session: session("blocked"),

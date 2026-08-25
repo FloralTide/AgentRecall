@@ -225,22 +225,20 @@ describe("SessionCatalogService deletion policy", () => {
     ], current.sessionKey);
   });
 
-  it("rejects Pi deletion before the source file deletion path", async () => {
-    const { service, store } = createService(session({
+  it("deletes a local Pi session through the family-aware deletion service", async () => {
+    const current = session({
       sessionKey: "pi:local",
       source: "pi-cli",
       environmentId: "local",
       environmentKind: "local",
       filePath: "/fixtures/pi-session.jsonl",
-    }));
+    });
+    const { service, store } = createService(current);
 
-    await expect(service.delete("pi:local", {
-      confirmed: true,
-      allowLiveSessions: true,
-    })).rejects.toThrow("Pi session source files are read-only.");
+    await expect(service.delete("pi:local")).resolves.toBe(true);
 
-    expect(store.deleteSessionRecord).not.toHaveBeenCalled();
     expect(store.deleteSession).not.toHaveBeenCalled();
+    expect(store.deleteSessionRecords).toHaveBeenCalledWith([current.sessionKey], false);
   });
 
   it("rejects WorkBuddy deletion before the source file deletion path", async () => {

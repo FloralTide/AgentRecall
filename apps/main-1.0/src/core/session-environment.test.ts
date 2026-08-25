@@ -12,7 +12,7 @@ describe("session environment", () => {
       environmentKind: "local",
       environmentId: "local",
       source: "pi-cli",
-    })).toBe(false);
+    })).toBe(true);
     expect(canDeleteSessionLocally({
       environmentKind: "local",
       environmentId: "local",
