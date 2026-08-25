@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type {
+  CodexIncrementalState,
   IndexedSession,
   SessionMessage,
   SessionTraceEvent,
@@ -128,6 +129,24 @@ describe("PostgresSessionRepository", () => {
   it("preserves paginated Codex history when migrating to a new Session key", async () => {
     const legacyKey = "ssh:dev:codex:legacy-paginated";
     const targetKey = "ssh:dev:codex-cli:legacy-paginated";
+    const toolCallState: NonNullable<CodexIncrementalState["toolCallState"]> = {
+      observations: [{
+        callId: "exec-parent#ast-0",
+        parentCallId: "exec-parent",
+        turnId: "legacy-turn-1",
+        namespace: null,
+        rawName: "exec_command",
+        input: { cmd: "pwd" },
+        cwd: "/repo",
+        status: "unknown",
+        evidence: "code-mode-ast",
+        durationMs: null,
+        timestamp: Date.parse("2026-07-30T08:00:00.000Z"),
+      }],
+      cwd: "/repo",
+      declaredSessionFormat: "paginated",
+      sawToolCompletion: false,
+    };
     await repository.upsertIndexedSession(
       session({ sessionKey: legacyKey, rawId: "legacy-paginated" }),
       [{
@@ -154,6 +173,7 @@ describe("PostgresSessionRepository", () => {
         historyMode: "paginated",
         messageProvenance: [{ messageIndex: 0, sourceRecordId: "response_item:legacy-answer" }],
         activeTurnIds: ["legacy-turn-1"],
+        toolCallState,
       },
     );
     await metadataRepository.upsertSessionSyncBinding({
@@ -173,6 +193,7 @@ describe("PostgresSessionRepository", () => {
       historyMode: "paginated",
       messageProvenance: [{ messageIndex: 0, sourceRecordId: "response_item:legacy-answer" }],
       activeTurnIds: ["legacy-turn-1"],
+      toolCallState,
     });
     await expect(metadataRepository.getSessionSyncBindingForLocalKey(legacyKey)).resolves.toBeNull();
     await expect(metadataRepository.getSessionSyncBindingForLocalKey(targetKey)).resolves.toMatchObject({
@@ -607,6 +628,85 @@ describe("PostgresSessionRepository", () => {
     });
     await expect(turnsRepository.getSessionTurn("codex:another-session", turn.id)).resolves.toBeNull();
     await expect(turnsRepository.getSessionTurn("codex:session-a", "missing-turn")).resolves.toBeNull();
+  });
+
+  it("stores a child span when its parent falls in the next insert batch", async () => {
+    const baseTime = Date.parse("2026-07-20T08:00:02.000Z");
+    const batchBoundaryTraces: SessionTraceEvent[] = [
+      ...Array.from({ length: 999 }, (_, index) => ({
+        index,
+        kind: "event" as const,
+        source: "codex" as const,
+        title: `Event ${index}`,
+        detail: "",
+        timestamp: new Date(baseTime + index).toISOString(),
+        status: "completed" as const,
+      })),
+      {
+        index: 999,
+        kind: "tool_call",
+        source: "codex" as const,
+        title: "exec_command",
+        detail: "{\"cmd\":\"npm test\"}",
+        timestamp: new Date(baseTime + 999).toISOString(),
+        callId: "child-call",
+        status: "completed",
+        attributes: {
+          tool: {
+            canonicalName: "exec_command",
+            executionEvidence: "runtime-confirmed",
+            parentCallId: "parent-call",
+            parsedFromCodeMode: true,
+          },
+        },
+      },
+      {
+        index: 1_000,
+        kind: "tool_call",
+        source: "codex" as const,
+        title: "exec",
+        detail: "await tools.exec_command(...)",
+        timestamp: new Date(baseTime + 1_000).toISOString(),
+        callId: "parent-call",
+        status: "completed",
+        attributes: {
+          tool: {
+            canonicalName: "exec",
+            executionEvidence: "recorded-request",
+          },
+        },
+      },
+    ];
+
+    await expect(repository.upsertIndexedSession(
+      session(),
+      [messages[0]],
+      [],
+      batchBoundaryTraces,
+    )).resolves.toBeUndefined();
+
+    const result = await database.query<{
+      id: string;
+      call_id: string;
+      parent_span_id: string | null;
+      span_index: number;
+    }>(`
+      select id, call_id, parent_span_id, span_index
+      from agent_recall.trace_spans
+      where call_id in ('child-call', 'parent-call')
+      order by span_index
+    `);
+    expect(result.rows).toHaveLength(2);
+    expect(result.rows[0]).toMatchObject({
+      call_id: "child-call",
+      parent_span_id: result.rows[1].id,
+      span_index: 999,
+    });
+    expect(result.rows[1]).toMatchObject({
+      call_id: "parent-call",
+      parent_span_id: null,
+      span_index: 1_000,
+    });
   });
 
   it("checks index freshness and lists indexed files without reading source files", async () => {

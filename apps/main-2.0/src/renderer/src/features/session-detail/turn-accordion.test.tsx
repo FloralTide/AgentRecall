@@ -4,6 +4,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  SessionTraceSpan,
   SessionTurnDetail,
   SessionTurnSummary,
 } from "../../../../core/types";
@@ -653,6 +654,173 @@ describe("TurnAccordion span payloads", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it("shows terminal legacy Codex tool results instead of request-only evidence", async () => {
+    const turn = createTurn("turn-legacy-status", 0, "run legacy tools", "");
+    const statuses = ["completed", "failed", "aborted"] as const;
+    const detail: SessionTurnDetail = {
+      ...turn,
+      messages: [],
+      spanCount: statuses.length,
+      spans: statuses.map((status, index) => ({
+        id: `span-${status}`,
+        parentSpanId: null,
+        spanIndex: index,
+        kind: "tool",
+        name: `legacy-${status}`,
+        status,
+        startedAt: `2026-08-13T09:17:00.00${index}Z`,
+        endedAt: `2026-08-13T09:17:00.01${index}Z`,
+        callId: `legacy-${status}`,
+        input: null,
+        output: { text: "legacy output" },
+        error: status === "failed" ? "failed" : null,
+        attributes: {
+          tool: {
+            canonicalName: "exec_command",
+            executionEvidence: "recorded-request",
+          },
+        },
+      })),
+    };
+
+    await act(async () => {
+      root.render(createElement(TurnAccordion, {
+        sessionKey: "codex:legacy-status",
+        turns: [turn],
+        loading: false,
+        matchedTurnId: null,
+        matchedMessageIndex: null,
+        showTools: true,
+        query: "",
+        language: "zh",
+        onLoadTurn: async () => detail,
+      }));
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".turn-card-summary")?.click();
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelectorAll(".msg.tool")).toHaveLength(3);
+    });
+
+    const rendered = [...container.querySelectorAll<HTMLElement>(".msg.tool")];
+    expect(rendered.map((span) => span.querySelector(".msg-tool-status")?.textContent?.trim())).toEqual([
+      "✓ 已完成",
+      "✕ 失败",
+      "■ 已中断",
+    ]);
+    expect(rendered.every((span) => !span.classList.contains("evidence-recorded-request"))).toBe(true);
+  });
+
+  it("shows each parsed tool after its runtime result inside exec", async () => {
+    const commands = [
+      "sed -n '1,260p' pr.md",
+      "rg --files .github",
+      "git show --stat --oneline HEAD",
+      "git log --oneline origin/main..HEAD",
+      "sed -n '1,160p' .release-notes/structured-tool-call.md",
+    ];
+    const turn = createTurn("turn-code-mode", 0, "inspect the skill", "");
+    const runtimeSpans: SessionTraceSpan[] = commands.map((cmd, index) => ({
+      id: `span-runtime-${index}`,
+      parentSpanId: "span-exec",
+      spanIndex: index + 1,
+      kind: "tool",
+      name: "exec_command",
+      status: "completed",
+      startedAt: `2026-08-13T09:17:00.0${index + 1}0Z`,
+      endedAt: `2026-08-13T09:17:00.0${index + 1}1Z`,
+      callId: `runtime-${index}`,
+      input: { cmd },
+      output: { exitCode: 0 },
+      error: null,
+      attributes: {
+        title: "exec_command",
+        tool: {
+          canonicalName: "exec_command",
+          executionEvidence: "runtime-confirmed",
+          parentCallId: "call-code-mode",
+          parsedFromCodeMode: true,
+        },
+      },
+    }));
+    const detail: SessionTurnDetail = {
+      ...turn,
+      messages: [],
+      spanCount: 6,
+      spans: [
+        {
+          id: "span-exec",
+          parentSpanId: null,
+          spanIndex: 0,
+          kind: "tool",
+          name: "exec",
+          status: "unknown",
+          startedAt: "2026-08-13T09:17:00.000Z",
+          endedAt: "2026-08-13T09:17:00.136Z",
+          callId: "call-code-mode",
+          input: { code: "await tools.exec_command(...)" },
+          output: null,
+          error: null,
+          attributes: {
+            title: "exec · exec_command",
+            nestedTools: ["exec_command"],
+            tool: {
+              canonicalName: "exec",
+              executionEvidence: "recorded-request",
+            },
+          },
+        },
+        ...runtimeSpans,
+      ],
+    };
+
+    await act(async () => {
+      root.render(
+        createElement(TurnAccordion, {
+          sessionKey: "codex:code-mode-group",
+          turns: [turn],
+          loading: false,
+          matchedTurnId: null,
+          matchedMessageIndex: null,
+          showTools: true,
+          query: "",
+          language: "zh",
+          onLoadTurn: async () => detail,
+        }),
+      );
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".turn-card-summary")?.click();
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelectorAll(".msg-tool-group")).toHaveLength(1);
+    });
+
+    const group = container.querySelector<HTMLDetailsElement>(".msg-tool-group");
+    expect(group?.open).toBe(false);
+    expect(container.querySelectorAll(".turn-timeline-item.span")).toHaveLength(1);
+    expect(container.querySelectorAll(".turn-timeline-item.span > .msg.tool.completed")).toHaveLength(0);
+    expect(group?.querySelectorAll(".msg-tool-parsed-results")).toHaveLength(0);
+    expect(group?.querySelectorAll(".msg-tool-child-result")).toHaveLength(5);
+    expect(group?.querySelectorAll(".msg-tool-child-result > .msg.tool.completed")).toHaveLength(5);
+    expect(group?.querySelectorAll(".msg-tool-child-result > .msg-tool-parsed-result")).toHaveLength(5);
+    expect(group?.querySelectorAll(".msg-tool-code-mode-origin")).toHaveLength(1);
+
+    await act(async () => {
+      group?.querySelector<HTMLElement>(":scope > .msg-tool-summary")?.click();
+    });
+
+    expect(group?.open).toBe(true);
+    expect(group?.textContent).toContain("AST 静态解析 · 5 个调用");
+    expect(group?.textContent).toContain("调用归属与代码参数来自 exec AST；状态和输出来自运行时记录");
+    expect(group?.querySelectorAll(".msg-tool-parsed-result-label")).toHaveLength(5);
+    for (const command of commands) expect(group?.textContent).toContain(command);
+    expect(group?.textContent).not.toContain("静态识别");
   });
 
   it("shows parsed nested tools for Codex exec spans and falls back to the stable tool name", async () => {
