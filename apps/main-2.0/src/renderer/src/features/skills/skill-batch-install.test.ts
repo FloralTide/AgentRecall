@@ -43,6 +43,7 @@ function managedSkill(states: Partial<Record<SkillInstallTarget, "installed" | "
     markdown: "# example",
     mtimeMs: 1,
     origin: { kind: "builtin", label: "Built-in" },
+    categoryId: "coding",
     installations: targets.map((target) => ({
       target,
       path: `/targets/${target}/example`,

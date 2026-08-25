@@ -316,8 +316,16 @@
 
 .skill-library-filter-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
+}
+
+.managed-skill-filter-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.managed-skill-filter-row > select:first-child {
+  grid-column: 1 / -1;
 }
 
 .skill-library-filter-row select {

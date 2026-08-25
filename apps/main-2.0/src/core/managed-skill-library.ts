@@ -10,6 +10,7 @@ import {
 } from "./skill-manager";
 import { AGENT_SKILL_REGISTRY, SKILL_INSTALL_TARGETS, type SkillInstallTarget } from "./agent-skill-registry";
 import { agentInstallTargetDir } from "./agent-skill-paths";
+import { isSkillCategoryId, type SkillCategoryId } from "./skill-categories";
 
 export type { SkillInstallTarget } from "./agent-skill-registry";
 export type ManagedSkillOriginKind = "local" | "skills-sh" | "remote" | "builtin";
@@ -33,6 +34,7 @@ export interface ManagedSkill extends InstalledSkill {
   source: "agent-recall-v2";
   managedId: string;
   origin: ManagedSkillOrigin;
+  categoryId: SkillCategoryId | null;
   installations: ManagedSkillInstallation[];
 }
 
@@ -67,6 +69,7 @@ interface ManagedSkillMetadata {
   managedId: string;
   importedAt: string;
   origin: ManagedSkillOrigin;
+  categoryId: SkillCategoryId | null;
 }
 
 export interface AgentRecallBuiltinSkillDefinition {
@@ -75,6 +78,7 @@ export interface AgentRecallBuiltinSkillDefinition {
   /** Managed library directory name after import. */
   installId: string;
   sourceUrl: string;
+  categoryId: SkillCategoryId;
 }
 
 export const AGENT_RECALL_BUILTIN_SKILLS: AgentRecallBuiltinSkillDefinition[] = [
@@ -82,36 +86,67 @@ export const AGENT_RECALL_BUILTIN_SKILLS: AgentRecallBuiltinSkillDefinition[] = 
     id: "aihot",
     installId: "aihot",
     sourceUrl: "https://github.com/KKKKhazix/khazix-skills/tree/main/aihot",
+    categoryId: "explore",
   },
   {
     id: "resume-optimization",
     installId: "resume-optimization",
     sourceUrl: "https://github.com/melodic-software/claude-code-plugins/tree/main/plugins/soft-skills/skills/resume-optimization",
+    categoryId: "writing",
   },
   {
     id: "brainstorming",
     installId: "brainstorming",
     sourceUrl: "https://github.com/obra/superpowers/tree/main/skills/brainstorming",
+    categoryId: "explore",
+  },
+  {
+    id: "dsh-code-review",
+    installId: "dsh-code-review",
+    sourceUrl: "https://github.com/deepseek-ai/deepseek-harness/tree/master/.agents/skills/dsh-code-review",
+    categoryId: "coding",
+  },
+  {
+    id: "dsh-find-simplifications",
+    installId: "dsh-find-simplifications",
+    sourceUrl: "https://github.com/deepseek-ai/deepseek-harness/tree/master/.agents/skills/dsh-find-simplifications",
+    categoryId: "coding",
+  },
+  {
+    id: "dsh-prose-standard",
+    installId: "dsh-prose-standard",
+    sourceUrl: "https://github.com/deepseek-ai/deepseek-harness/tree/master/.agents/skills/dsh-prose-standard",
+    categoryId: "writing",
+  },
+  {
+    id: "dsh-trim-cot-leakage",
+    installId: "dsh-trim-cot-leakage",
+    sourceUrl: "https://github.com/deepseek-ai/deepseek-harness/tree/master/.agents/skills/dsh-trim-cot-leakage",
+    categoryId: "writing",
   },
   {
     id: "grill-me",
     installId: "grill-me",
     sourceUrl: "https://github.com/mattpocock/skills/tree/main/skills/grill-me",
+    categoryId: "productivity",
   },
   {
     id: "systematic-debugging",
     installId: "systematic-debugging",
     sourceUrl: "https://github.com/obra/superpowers/tree/main/skills/systematic-debugging",
+    categoryId: "coding",
   },
   {
     id: "test-driven-development",
     installId: "test-driven-development",
     sourceUrl: "https://github.com/obra/superpowers/tree/main/skills/test-driven-development",
+    categoryId: "coding",
   },
   {
     id: "verification-before-completion",
     installId: "verification-before-completion",
     sourceUrl: "https://github.com/obra/superpowers/tree/main/skills/verification-before-completion",
+    categoryId: "coding",
   },
 ];
 
@@ -157,6 +192,7 @@ export class ManagedSkillLibrary {
           source: "agent-recall-v2",
           managedId,
           origin: metadata?.origin ?? { kind: "local", label: "AgentRecall" },
+          categoryId: metadata?.categoryId ?? null,
           installations: INSTALL_TARGETS.map((target) => this.inspectInstallation(managedId, target)),
         };
       })
@@ -201,14 +237,24 @@ export class ManagedSkillLibrary {
       if (!fs.existsSync(path.join(sourceDir, "SKILL.md"))) continue;
       const managedId = safeManagedSkillId(definition.installId);
       const targetPath = this.managedSkillDirectory(managedId);
-      // Idempotent: skip when the built-in skill is already present.
-      if (fs.existsSync(targetPath)) continue;
+      const origin: ManagedSkillOrigin = {
+        kind: "builtin",
+        label: "AgentRecall",
+        url: definition.sourceUrl,
+      };
+      if (fs.existsSync(targetPath)) {
+        const metadata = this.readMetadata(managedId);
+        if (metadata?.origin.kind === "builtin" && metadata.categoryId !== definition.categoryId) {
+          try {
+            this.writeMetadata(managedId, metadata.origin, definition.categoryId);
+          } catch {
+            // A metadata refresh must not block startup; retried next launch.
+          }
+        }
+        continue;
+      }
       try {
-        this.importDirectory(managedId, sourceDir, {
-          kind: "builtin",
-          label: "AgentRecall",
-          url: definition.sourceUrl,
-        });
+        this.importDirectory(managedId, sourceDir, origin, definition.categoryId);
       } catch {
         // A failed built-in import must not block startup; retried next launch.
       }
@@ -682,7 +728,12 @@ export class ManagedSkillLibrary {
     };
   }
 
-  private importDirectory(managedId: string, sourceDirectory: string, origin: ManagedSkillOrigin): ManagedSkillImportResult {
+  private importDirectory(
+    managedId: string,
+    sourceDirectory: string,
+    origin: ManagedSkillOrigin,
+    categoryId?: SkillCategoryId,
+  ): ManagedSkillImportResult {
     return this.importIntoStaging(managedId, origin, (stagingPath) => {
       fs.cpSync(sourceDirectory, stagingPath, {
         recursive: true,
@@ -690,7 +741,7 @@ export class ManagedSkillLibrary {
         force: false,
         verbatimSymlinks: true,
       });
-    });
+    }, false, categoryId);
   }
 
   private importIntoStaging(
@@ -698,6 +749,7 @@ export class ManagedSkillLibrary {
     origin: ManagedSkillOrigin,
     populate: (stagingPath: string) => void,
     replaceExisting = false,
+    categoryId?: SkillCategoryId,
   ): ManagedSkillImportResult {
     fs.mkdirSync(this.libraryRoot, { recursive: true });
     const targetPath = this.managedSkillDirectory(managedId);
@@ -711,7 +763,7 @@ export class ManagedSkillLibrary {
       if (fs.existsSync(targetPath)) {
         if (directoryContentHash(targetPath) === directoryContentHash(stagingPath)) {
           fs.rmSync(stagingPath, { recursive: true, force: true });
-          this.writeMetadata(managedId, origin);
+          this.writeMetadata(managedId, origin, categoryId);
           return { status: "existing", managedId, skill: this.requireManagedSkill(managedId) };
         }
         if (!replaceExisting) {
@@ -721,7 +773,7 @@ export class ManagedSkillLibrary {
         fs.renameSync(targetPath, backupPath);
         try {
           fs.renameSync(stagingPath, targetPath);
-          this.writeMetadata(managedId, origin);
+          this.writeMetadata(managedId, origin, categoryId);
           fs.rmSync(backupPath, { recursive: true, force: true });
           return { status: "updated", managedId, skill: this.requireManagedSkill(managedId) };
         } catch (error) {
@@ -731,7 +783,7 @@ export class ManagedSkillLibrary {
         }
       }
       fs.renameSync(stagingPath, targetPath);
-      this.writeMetadata(managedId, origin);
+      this.writeMetadata(managedId, origin, categoryId);
       return { status: "imported", managedId, skill: this.requireManagedSkill(managedId) };
     } catch (error) {
       fs.rmSync(stagingPath, { recursive: true, force: true });
@@ -759,20 +811,28 @@ export class ManagedSkillLibrary {
     try {
       const value = JSON.parse(fs.readFileSync(this.metadataPath(managedId), "utf8")) as Partial<ManagedSkillMetadata>;
       if (value.schemaVersion !== 1 || value.managedId !== managedId || !isManagedSkillOrigin(value.origin)) return null;
-      return value as ManagedSkillMetadata;
+      return {
+        schemaVersion: 1,
+        managedId,
+        importedAt: typeof value.importedAt === "string" ? value.importedAt : "",
+        origin: value.origin,
+        categoryId: isSkillCategoryId(value.categoryId) ? value.categoryId : null,
+      };
     } catch {
       return null;
     }
   }
 
-  private writeMetadata(managedId: string, origin: ManagedSkillOrigin): void {
+  private writeMetadata(managedId: string, origin: ManagedSkillOrigin, categoryId?: SkillCategoryId): void {
     const metadataPath = this.metadataPath(managedId);
     const temporaryPath = `${metadataPath}.${randomUUID()}.tmp`;
+    const existing = this.readMetadata(managedId);
     const metadata: ManagedSkillMetadata = {
       schemaVersion: 1,
       managedId,
-      importedAt: new Date(this.now()).toISOString(),
+      importedAt: existing?.importedAt || new Date(this.now()).toISOString(),
       origin,
+      categoryId: categoryId ?? existing?.categoryId ?? null,
     };
     fs.mkdirSync(path.dirname(metadataPath), { recursive: true });
     fs.writeFileSync(temporaryPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf8");

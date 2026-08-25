@@ -4,6 +4,7 @@ import { Compass, PackagePlus, RefreshCw, Upload, X } from "lucide-react";
 import type { InstalledSkill, InstalledSkillsSnapshot } from "../../../../core/skill-manager";
 import type { ManagedSkill, SkillInstallTarget } from "../../../../core/managed-skill-library";
 import type { RemoteSkill, SkillSyncSnapshot, SkillSyncUploadOutcome } from "../../../../core/skill-sync";
+import { isSkillCategoryId } from "../../../../core/skill-categories";
 import { formatCompactNumber } from "../../format-count";
 import { localize, type LanguageMode } from "../../language";
 import { buildUnifiedSkillEntries } from "../../skill-sync-view-model";
@@ -17,6 +18,7 @@ import { SkillLibraryDetail } from "./skill-library-detail";
 import {
   filterManagedSkills,
   SkillLibraryList,
+  type ManagedSkillCategoryFilter,
   type ManagedSkillOriginFilter,
   type ManagedSkillSort,
 } from "./skill-library-list";
@@ -83,6 +85,7 @@ export function SkillsPage({
   }, [evalBadgeCounts]);
   const unifiedEntries = useMemo(() => buildUnifiedSkillEntries(snapshot, syncSnapshot), [snapshot, syncSnapshot]);
   const [query, setQuery] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState<ManagedSkillCategoryFilter>("all");
   const [originFilter, setOriginFilter] = useState<ManagedSkillOriginFilter>("all");
   const [sort, setSort] = useState<ManagedSkillSort>("usage");
   const [activeTab, setActiveTab] = useState<"app" | "local">("app");
@@ -97,8 +100,8 @@ export function SkillsPage({
   const [appFeedback, setAppFeedback] = useState<{ kind: "success" | "warning" | "error"; message: string } | null>(null);
   const [pendingSelection, setPendingSelection] = useState<string | null>(null);
   const filteredSkills = useMemo(
-    () => filterManagedSkills(managedSkills, query, originFilter, sort),
-    [managedSkills, originFilter, query, sort],
+    () => filterManagedSkills(managedSkills, query, categoryFilter, originFilter, sort),
+    [categoryFilter, managedSkills, originFilter, query, sort],
   );
   const selectedSkill = selectedRemoteFingerprint
     ? null
@@ -350,11 +353,13 @@ export function SkillsPage({
               selectedId={selectedSkill?.managedId ?? null}
               selectedIds={checkedIds}
               query={query}
+              categoryFilter={categoryFilter}
               originFilter={originFilter}
               sort={sort}
               loading={loading}
               language={language}
               onQueryChange={setQuery}
+              onCategoryFilterChange={setCategoryFilter}
               onOriginFilterChange={setOriginFilter}
               onSortChange={setSort}
               onSelect={(managedId) => {
@@ -461,5 +466,6 @@ export function isManagedSkill(skill: InstalledSkill): skill is ManagedSkill {
   const candidate = skill as Partial<ManagedSkill>;
   return typeof candidate.managedId === "string"
     && Boolean(candidate.origin)
+    && (candidate.categoryId === null || isSkillCategoryId(candidate.categoryId))
     && Array.isArray(candidate.installations);
 }
