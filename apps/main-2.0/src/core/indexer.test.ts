@@ -325,11 +325,20 @@ describe("indexer", () => {
   it("skips unchanged active and archived Qwen sessions through source-scoped snapshots", async () => {
     const store = createInMemoryStore();
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v2-qwen-skip-"));
+    const runtimeTrapHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v2-qwen-runtime-trap-"));
+    const qwenHomeTrap = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v2-qwen-home-trap-"));
+    const previousRuntimeDir = process.env.QWEN_RUNTIME_DIR;
+    const previousQwenHome = process.env.QWEN_HOME;
     try {
       const activePath = writeQwenSession(homeDir, "active", "active question");
       const archivePath = writeQwenSession(homeDir, "archived", "archived question", true);
+      writeQwenSession(runtimeTrapHome, "runtime-trap", "runtime trap question");
+      writeQwenSession(qwenHomeTrap, "home-trap", "home trap question");
+      process.env.QWEN_RUNTIME_DIR = path.join(runtimeTrapHome, ".qwen");
+      process.env.QWEN_HOME = path.join(qwenHomeTrap, ".qwen");
       const cold = await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir, includeQwenCode: true } });
       expect(cold).toMatchObject({ indexed: 2, skipped: 0, total: 2 });
+      await expect(store.searchSessions({ query: "trap question", limit: 10 })).resolves.toHaveLength(0);
 
       const snapshots = await store.listIndexedSessionFiles();
       for (const filePath of [activePath, archivePath]) {
@@ -342,8 +351,14 @@ describe("indexer", () => {
       expect(warm).toMatchObject({ indexed: 0, skipped: 2, total: 2 });
       await expect(store.searchSessions({ query: "question", limit: 10 })).resolves.toHaveLength(2);
     } finally {
+      if (previousRuntimeDir === undefined) delete process.env.QWEN_RUNTIME_DIR;
+      else process.env.QWEN_RUNTIME_DIR = previousRuntimeDir;
+      if (previousQwenHome === undefined) delete process.env.QWEN_HOME;
+      else process.env.QWEN_HOME = previousQwenHome;
       await store.close();
       fs.rmSync(homeDir, { recursive: true, force: true });
+      fs.rmSync(runtimeTrapHome, { recursive: true, force: true });
+      fs.rmSync(qwenHomeTrap, { recursive: true, force: true });
     }
   });
 

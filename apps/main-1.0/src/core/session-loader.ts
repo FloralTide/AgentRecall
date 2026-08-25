@@ -62,7 +62,8 @@ const KIMI_CODE_DIR = ".kimi-code";
 const KIMI_LEGACY_DIR = ".kimi";
 const QWEN_DIR = ".qwen";
 
-function resolveQwenCodeRoot(homeDir: string): string {
+function resolveQwenCodeRoot(homeDir: string, options: SessionLoadOptions): string {
+  if (options.homeDir !== undefined) return path.join(homeDir, QWEN_DIR);
   const configured = process.env.QWEN_RUNTIME_DIR?.trim() || process.env.QWEN_HOME?.trim();
   if (!configured) return path.join(homeDir, QWEN_DIR);
   const expanded = configured === "~"
@@ -4381,7 +4382,7 @@ export function* loadDefaultSessionsIterator(options: SessionLoadOptions = {}): 
   }
   if (options.includeKimiCli) yield* loadKimiSessionsIterator(path.join(homeDir, KIMI_LEGACY_DIR), resolveKimiCodeRoot(homeDir, options), options);
   if (options.includeQwenCode) {
-    yield* loadQwenCodeSessionsIterator(resolveQwenCodeRoot(homeDir), options);
+    yield* loadQwenCodeSessionsIterator(resolveQwenCodeRoot(homeDir, options), options);
   }
   if (options.includeOpenClaw) {
     yield* loadOpenClawSessionsIterator(path.join(homeDir, ".openclaw"), options);
@@ -4422,7 +4423,7 @@ export async function* loadDefaultSessionsAsyncIterator(options: SessionLoadOpti
   }
   if (options.includeKimiCli) yield* loadKimiSessionsIterator(path.join(homeDir, KIMI_LEGACY_DIR), resolveKimiCodeRoot(homeDir, options), options);
   if (options.includeQwenCode) {
-    yield* loadQwenCodeSessionsIterator(resolveQwenCodeRoot(homeDir), options);
+    yield* loadQwenCodeSessionsIterator(resolveQwenCodeRoot(homeDir, options), options);
   }
   if (options.includeOpenClaw) {
     yield* loadOpenClawSessionsIterator(path.join(homeDir, ".openclaw"), options);

@@ -1,10 +1,15 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SessionStore } from "../core/session-store";
 import { runSessionIndexWorker } from "./session-index-worker-runner";
 import type { SessionIndexWorkerMessage } from "./session-index-worker-protocol";
+
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  return { ...actual, homedir: vi.fn(() => actual.homedir()) };
+});
 
 describe("runSessionIndexWorker", () => {
   it("indexes an isolated home and reports progress through the worker protocol", async () => {
@@ -33,6 +38,8 @@ describe("runSessionIndexWorker", () => {
     ].join("\n"));
     new SessionStore(dbPath).close();
     const messages: SessionIndexWorkerMessage[] = [];
+    const defaultHomeDir = os.homedir();
+    vi.mocked(os.homedir).mockReturnValue(homeDir);
 
     try {
       const result = await runSessionIndexWorker({
@@ -41,7 +48,7 @@ describe("runSessionIndexWorker", () => {
         userDataPath,
         batchSize: 1,
         timeBudgetMs: 1,
-        loadOptions: { homeDir },
+        loadOptions: {},
         disabledSources: [],
       }, (message) => messages.push(message));
 
@@ -70,6 +77,7 @@ describe("runSessionIndexWorker", () => {
         prunedStore.close();
       }
     } finally {
+      vi.mocked(os.homedir).mockReset().mockReturnValue(defaultHomeDir);
       fs.rmSync(root, { recursive: true, force: true });
     }
   });

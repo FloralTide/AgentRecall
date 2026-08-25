@@ -5,7 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadDefaultSessions } from "./session-loader";
 import { deriveSessionTimeline } from "./turns/derive-turns";
 
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  return { ...actual, homedir: vi.fn(() => actual.homedir()) };
+});
+
 const roots: string[] = [];
+const defaultHomeDir = os.homedir();
 const originalRuntimeDir = process.env.QWEN_RUNTIME_DIR;
 const originalQwenHome = process.env.QWEN_HOME;
 const originalHome = process.env.HOME;
@@ -25,6 +31,7 @@ afterEach(() => {
   if (originalUserProfile === undefined) delete process.env.USERPROFILE;
   else process.env.USERPROFILE = originalUserProfile;
   vi.restoreAllMocks();
+  vi.mocked(os.homedir).mockReset().mockReturnValue(defaultHomeDir);
 });
 function fixture(): string { const root = fs.mkdtempSync(path.join(os.tmpdir(), "agentrecall-qwen-v2-")); roots.push(root); return root; }
 function record(uuid: string, parentUuid: string | null, type: "user" | "assistant", text: string, extra: Record<string, unknown> = {}) { return { uuid, parentUuid, sessionId: "qwen-1", timestamp: "2026-08-23T00:00:00.000Z", type, cwd: "C:/repo", version: "0.22.0", message: { role: type, parts: [{ text }] }, ...extra }; }
@@ -35,13 +42,18 @@ describe("Qwen Code sessions", () => {
     const user = record("u", null, "user", "internal", { systemPayload: { displayText: "visible" } }); const dead = record("dead", null, "user", "rewound"); const assistant = record("a", "u", "assistant", "answer", { usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, thoughtsTokenCount: 1 }, message: { parts: [{ thought: true, text: "thinking" }, { text: "answer" }, { functionCall: { name: "read_file", id: "c1" } }] } }); const tool = { uuid: "t", parentUuid: "a", sessionId: "qwen-1", timestamp: "2026-08-23T00:00:01.000Z", type: "tool_result", cwd: "C:/repo", message: { role: "user", parts: [{ functionResponse: { id: "c1", name: "read_file", response: { output: "done" } } }] }, toolCallResult: { callId: "c1", output: "done" } }; const metadata = { type: "system", subtype: "metadata" }; const title = { uuid: "title", parentUuid: "t", sessionId: "qwen-1", timestamp: "2026-08-23T00:00:02.000Z", type: "system", subtype: "custom_title", systemPayload: { customTitle: "Named session" } };
     fs.writeFileSync(path.join(chats, "qwen-1.jsonl"), `${[user, dead, assistant, tool, metadata, title].map((row) => JSON.stringify(row)).join("")}\ninvalid\n{"uuid":"tail"`); fs.writeFileSync(path.join(chats, "archive", "qwen-1.jsonl"), JSON.stringify(record("old", null, "user", "archive")));
     const [loaded] = loadDefaultSessions({ homeDir: root, includeQwenCode: true }); expect(loaded.session.source).toBe("qwen-code"); expect(loaded.session.originalTitle).toBe("Named session"); expect(loaded.messages.map((m) => m.content)).toEqual(["visible", "answer"]); expect(loaded.session.tokenUsage?.totalTokens).toBe(6); expect(loaded.traceEvents?.some((e) => e.kind === "tool_call")).toBe(true); expect(loaded.traceEvents?.filter((e) => e.eventType === "qwen.tool_result")).toEqual([expect.objectContaining({ callId: "c1" })]); expect(loaded.messages.some((m) => m.content === "rewound")).toBe(false);
-    const toolSpans = deriveSessionTimeline({ sessionKey: loaded.session.sessionKey, messages: loaded.messages, tokenEvents: loaded.tokenEvents ?? [], traceEvents: loaded.traceEvents ?? [] }).turns.flatMap((turn) => turn.spans).filter((span) => span.callId === "c1");
+    const timeline = deriveSessionTimeline({ sessionKey: loaded.session.sessionKey, messages: loaded.messages, tokenEvents: loaded.tokenEvents ?? [], traceEvents: loaded.traceEvents ?? [] });
+    const spans = timeline.turns.flatMap((turn) => turn.spans);
+    const toolSpans = spans.filter((span) => span.callId === "c1");
     expect(toolSpans).toEqual([expect.objectContaining({ status: "completed", endedAt: expect.any(String) })]);
+    expect(spans.filter((span) => span.attributes.eventType === "qwen.thought")).toEqual([expect.objectContaining({ kind: "event" })]);
+    expect(timeline.turns.flatMap((turn) => turn.toolNames)).toEqual(["function: read_file"]);
   });
 
   it("uses QWEN_RUNTIME_DIR before QWEN_HOME", () => {
     const runtime = fixture(); const home = fixture(); const syntheticHome = fixture(); for (const [base, text] of [[runtime, "runtime"], [home, "home"]] as const) { const chats = path.join(base, "projects", "p", "chats"); fs.mkdirSync(chats, { recursive: true }); fs.writeFileSync(path.join(chats, `${text}.jsonl`), JSON.stringify(record(text, null, "user", text))); }
-    process.env.QWEN_HOME = home; process.env.QWEN_RUNTIME_DIR = runtime; const loaded = loadDefaultSessions({ homeDir: syntheticHome, includeQwenCode: true }).filter((item) => item.session.source === "qwen-code"); expect(loaded).toHaveLength(1); expect(loaded[0].messages[0].content).toBe("runtime");
+    vi.mocked(os.homedir).mockReturnValue(syntheticHome);
+    process.env.QWEN_HOME = home; process.env.QWEN_RUNTIME_DIR = runtime; const loaded = loadDefaultSessions({ includeQwenCode: true }).filter((item) => item.session.source === "qwen-code"); expect(loaded).toHaveLength(1); expect(loaded[0].messages[0].content).toBe("runtime");
   });
 
   it("keeps braces inside valid JSON text and honors authoritative Qwen token totals", () => {
@@ -109,21 +121,20 @@ describe("Qwen Code sessions", () => {
   });
 
   it("expands a QWEN_RUNTIME_DIR tilde path", () => {
-    const fakeHome = fixture(); const root = fixture(); process.env.HOME = fakeHome; process.env.USERPROFILE = fakeHome;
+    const fakeHome = fixture(); process.env.HOME = fakeHome; process.env.USERPROFILE = fakeHome; vi.mocked(os.homedir).mockReturnValue(fakeHome);
     const chats = path.join(fakeHome, "qwen-runtime", "nested", "projects", "project", "chats"); fs.mkdirSync(chats, { recursive: true });
     fs.writeFileSync(path.join(chats, "tilde.jsonl"), JSON.stringify(record("tilde", null, "user", "tilde")));
     process.env.QWEN_RUNTIME_DIR = "~\\qwen-runtime\\nested";
-    const loaded = loadDefaultSessions({ homeDir: root, includeQwenCode: true }).filter((item) => item.session.source === "qwen-code");
+    const loaded = loadDefaultSessions({ includeQwenCode: true }).filter((item) => item.session.source === "qwen-code");
     expect(loaded).toHaveLength(1); expect(loaded[0].messages[0].content).toBe("tilde");
   });
 
-  it("uses QWEN_HOME when runtime is unset even with an explicit homeDir", () => {
-    const root = fixture(); const qwenHome = fixture();
-    const chats = path.join(qwenHome, "projects", "project", "chats"); fs.mkdirSync(chats, { recursive: true });
-    fs.writeFileSync(path.join(chats, "home.jsonl"), JSON.stringify(record("home", null, "user", "home")));
-    delete process.env.QWEN_RUNTIME_DIR; process.env.QWEN_HOME = qwenHome;
+  it("keeps an explicit homeDir isolated from Qwen environment overrides", () => {
+    const root = fixture(); const runtime = fixture(); const qwenHome = fixture();
+    for (const [base, text] of [[path.join(root, ".qwen"), "explicit"], [runtime, "runtime"], [qwenHome, "home"]] as const) { const chats = path.join(base, "projects", "project", "chats"); fs.mkdirSync(chats, { recursive: true }); fs.writeFileSync(path.join(chats, `${text}.jsonl`), JSON.stringify(record(text, null, "user", text))); }
+    process.env.QWEN_RUNTIME_DIR = runtime; process.env.QWEN_HOME = qwenHome;
     const loaded = loadDefaultSessions({ homeDir: root, includeQwenCode: true }).filter((item) => item.session.source === "qwen-code");
-    expect(loaded).toHaveLength(1); expect(loaded[0].messages[0].content).toBe("home");
+    expect(loaded).toHaveLength(1); expect(loaded[0].messages[0].content).toBe("explicit");
   });
 
   it("does not let an archive copy replace a skipped active session", () => {

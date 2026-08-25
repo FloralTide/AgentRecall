@@ -1294,7 +1294,6 @@ function runIndexSync(): Promise<IndexStatus> {
       timeBudgetMs: 8,
       disabledSources: disabledOptionalSources(settings),
       loadOptions: {
-        homeDir: app.getPath("home"),
         includeTclaude: settings.includeTclaude,
         includeTcodex: settings.includeTcodex,
         includeCodeBuddyCli: settings.includeCodeBuddyCli,
