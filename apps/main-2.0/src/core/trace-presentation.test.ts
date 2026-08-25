@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { traceCompactionSummary } from "./trace-presentation";
+import { traceCompactionSummary, tracePresentation } from "./trace-presentation";
+
+describe("tracePresentation", () => {
+  it("classifies Qwen thoughts as reasoning", () => {
+    expect(tracePresentation({ kind: "event", eventType: "qwen.thought" })).toEqual({
+      category: "reasoning",
+      visibility: "timeline",
+    });
+  });
+});
 
 describe("traceCompactionSummary", () => {
   it("returns displayable compact statistics", () => {

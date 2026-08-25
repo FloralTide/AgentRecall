@@ -1294,7 +1294,6 @@ function runIndexSync(): Promise<IndexStatus> {
       timeBudgetMs: 8,
       disabledSources: disabledOptionalSources(settings),
       loadOptions: {
-        homeDir: app.getPath("home"),
         includeTclaude: settings.includeTclaude,
         includeTcodex: settings.includeTcodex,
         includeCodeBuddyCli: settings.includeCodeBuddyCli,
@@ -1306,6 +1305,7 @@ function runIndexSync(): Promise<IndexStatus> {
         includeZcode: settings.includeZcode,
         includePi: settings.includePi,
         includeKimiCli: settings.includeKimiCli,
+        includeQwenCode: settings.includeQwenCode,
         includeCursorAgent: settings.includeCursorAgent,
         includeTrae: settings.includeTrae,
         includeQoder: settings.includeQoder,
@@ -2270,7 +2270,7 @@ function registerIpc(): void {
     if (confirmed && !confirmationFingerprint) {
       throw new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
     }
-    if (session?.source === "workbuddy-cli" || session?.source === "kimi-cli") {
+    if (session?.source === "workbuddy-cli" || session?.source === "kimi-cli" || session?.source === "qwen-code") {
       throw new Error(`${sessionSourceDescriptor(session.source).label} session source files are read-only.`);
     }
     if (session && !canDeleteSessionLocally(session)) {

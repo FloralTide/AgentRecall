@@ -5,6 +5,7 @@ import {
   isLocalSessionStorage,
   isSharedSessionSourceDatabase,
 } from "./session-environment";
+import { sessionSourceDescriptor } from "./session-sources";
 import { deleteLocalSessionSources } from "./session-source-delete";
 import { deleteZcodeSessions } from "./zcode-session-writer";
 import {
@@ -249,9 +250,8 @@ export class SessionStore {
     await this.ready;
     const target = targets.find((item) => item.sessionKey === requestedSessionKey);
     if (!target) return false;
-    if (target.source === "workbuddy-cli" || target.source === "kimi-cli") {
-      const label = target.source === "workbuddy-cli" ? "WorkBuddy" : "Kimi Code";
-      throw new Error(`${label} session source files are read-only.`);
+    if (target.source === "workbuddy-cli" || target.source === "kimi-cli" || target.source === "qwen-code") {
+      throw new Error(`${sessionSourceDescriptor(target.source).label} session source files are read-only.`);
     }
     if (!canDeleteSessionLocally(target)) {
       throw new Error("Cannot delete sessions stored on SSH remote environments.");

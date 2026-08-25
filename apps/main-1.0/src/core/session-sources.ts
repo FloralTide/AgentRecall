@@ -15,6 +15,7 @@ export type OptionalSessionSourceSetting =
   | "includeQoder"
   | "includePi"
   | "includeKimiCli"
+  | "includeQwenCode"
   | "includeDeepSeekCli";
 
 export type SessionSourceFamily =
@@ -34,6 +35,7 @@ export type SessionSourceFamily =
   | "qoder"
   | "pi"
   | "kimi"
+  | "qwen"
   | "deepseek";
 
 export type SessionSourceUiFamily = "claude" | "codex" | "codebuddy" | "codewiz" | "zcode" | "other";
@@ -173,6 +175,12 @@ export const SESSION_SOURCE_REGISTRY = {
   "kimi-cli": {
     id: "kimi-cli", label: "Kimi Code", format: "kimi", family: "kimi", uiFamily: "other", statsGroup: null,
     optionalSetting: "includeKimiCli", pendingKey: "kimi", remoteCollectorOptional: false, liveFamily: null, migrationAgent: null,
+    resumeTarget: null, remoteFamily: null, nativeAppFamily: null,
+    capabilities: { live: false, resume: false, migrate: false, sessionSync: false, openApp: false },
+  },
+  "qwen-code": {
+    id: "qwen-code", label: "Qwen Code", format: "qwen", family: "qwen", uiFamily: "other", statsGroup: null,
+    optionalSetting: "includeQwenCode", pendingKey: "qwen", remoteCollectorOptional: false, liveFamily: null, migrationAgent: null,
     resumeTarget: null, remoteFamily: null, nativeAppFamily: null,
     capabilities: { live: false, resume: false, migrate: false, sessionSync: false, openApp: false },
   },

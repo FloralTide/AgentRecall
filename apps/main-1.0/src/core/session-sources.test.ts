@@ -28,6 +28,7 @@ const ALL_SOURCES = [
   "qoder",
   "pi-cli",
   "kimi-cli",
+  "qwen-code",
   "deepseek-cli",
 ] as const satisfies readonly SessionSource[];
 
@@ -68,6 +69,7 @@ describe("session source capability registry", () => {
       "includeQoder",
       "includePi",
       "includeKimiCli",
+      "includeQwenCode",
       "includeDeepSeekCli",
     ]);
     expect(sessionSourceDescriptor("tclaude-cli")).toMatchObject({ liveFamily: "tclaude", migrationAgent: "claude" });
@@ -120,6 +122,12 @@ describe("session source capability registry", () => {
     expect(remoteSessionAgentForSource("hermes")).toBe("hermes");
     expect(remoteSessionAgentForSource("zcode-cli")).toBeNull();
     expect(remoteSessionAgentForSource("workbuddy-cli")).toBeNull();
+    expect(sessionSourceDescriptor("qwen-code")).toMatchObject({
+      label: "Qwen Code",
+      format: "qwen",
+      optionalSetting: "includeQwenCode",
+      capabilities: { live: false, resume: false, migrate: false, sessionSync: false, openApp: false },
+    });
     expect(OPTIONAL_SESSION_SOURCE_DESCRIPTORS.filter(({ remoteCollectorOptional }) => remoteCollectorOptional).map(({ id }) => id)).toEqual([
       "tclaude-cli",
       "tcodex-cli",

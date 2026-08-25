@@ -12,4 +12,13 @@ describe("StepCode session source semantics", () => {
       pendingKey: "stepcode",
     });
   });
+
+  it("keeps Qwen Code opt-in and read-only", () => {
+    expect(sessionSourceDescriptor("qwen-code")).toMatchObject({
+      label: "Qwen Code",
+      format: "qwen",
+      optionalSetting: "includeQwenCode",
+      capabilities: { live: false, resume: false, migrate: false, sessionSync: false, openApp: false },
+    });
+  });
 });

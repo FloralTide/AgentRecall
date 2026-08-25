@@ -19,6 +19,7 @@ import {
   KIMI_LEGACY_DIR,
   PI_SESSIONS_DIR,
   QODER_DIR,
+  QWEN_DIR,
   TRAE_DIR_NAMES,
   loadCodeWizSessions,
   loadCursorAgentSessionsIterator,
@@ -28,6 +29,7 @@ import {
   loadOpenCodeSessions,
   loadPiSessionsIterator,
   loadKimiSessionsIterator,
+  loadQwenCodeSessionsIterator,
   loadQoderSessionsIterator,
   loadTraeSessionsIterator,
   loadZcodeSessions,
@@ -100,6 +102,18 @@ function resolveKimiCodeRoot(homeDir: string, options: SessionLoadOptions): stri
   return options.homeDir === undefined
     ? process.env.KIMI_CODE_HOME?.trim() || path.join(homeDir, KIMI_CODE_DIR)
     : path.join(homeDir, KIMI_CODE_DIR);
+}
+
+function resolveQwenCodeRoot(homeDir: string, options: SessionLoadOptions): string {
+  if (options.homeDir !== undefined) return path.join(homeDir, QWEN_DIR);
+  const configured = process.env.QWEN_RUNTIME_DIR?.trim() || process.env.QWEN_HOME?.trim();
+  if (!configured) return path.join(homeDir, QWEN_DIR);
+  const expanded = configured === "~"
+    ? os.homedir()
+    : configured.startsWith("~/") || configured.startsWith("~\\")
+      ? path.join(os.homedir(), ...configured.slice(2).split(/[\\/]+/u).filter(Boolean))
+      : configured;
+  return path.resolve(expanded);
 }
 
 interface CodexSessionMeta {
@@ -1934,6 +1948,9 @@ export function* loadDefaultSessionsIterator(options: SessionLoadOptions = {}): 
     resolveKimiCodeRoot(homeDir, options),
     options,
   );
+  if (options.includeQwenCode) {
+    yield* loadQwenCodeSessionsIterator(resolveQwenCodeRoot(homeDir, options), options);
+  }
   if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
   if (options.includeTcodex) yield* loadCodexSessionsIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);
   if (options.includeCodeBuddyCli) yield* loadCodeBuddyCliSessionsIterator(path.join(homeDir, CODEBUDDY_DIR), options);
@@ -1984,6 +2001,9 @@ export async function* loadDefaultSessionsAsyncIterator(options: SessionLoadOpti
     resolveKimiCodeRoot(homeDir, options),
     options,
   );
+  if (options.includeQwenCode) {
+    yield* loadQwenCodeSessionsIterator(resolveQwenCodeRoot(homeDir, options), options);
+  }
   if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
   if (options.includeTcodex) yield* loadCodexSessionsAsyncIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);
   if (options.includeCodeBuddyCli) yield* loadCodeBuddyCliSessionsIterator(path.join(homeDir, CODEBUDDY_DIR), options);

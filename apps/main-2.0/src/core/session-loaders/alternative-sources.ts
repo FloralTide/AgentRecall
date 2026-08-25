@@ -645,6 +645,127 @@ export function* loadKimiSessionsIterator(
   }
 }
 
+export const QWEN_DIR = ".qwen";
+
+function qwenRows(filePath: string): unknown[] {
+  let text = "";
+  try { text = fs.readFileSync(filePath, "utf8"); } catch { return []; }
+  const rows: unknown[] = [];
+  for (const line of text.split(/\r?\n/u)) {
+    const trimmed = line.trim(); if (!trimmed) continue;
+    try { rows.push(JSON.parse(trimmed)); continue; } catch { /* a malformed or glued line may still contain valid objects */ }
+    let start = -1;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = 0; index < trimmed.length; index += 1) {
+      const character = trimmed[index];
+      if (start < 0) {
+        if (character === "{") { start = index; depth = 1; }
+        continue;
+      }
+      if (escaped) { escaped = false; continue; }
+      if (inString && character === "\\") { escaped = true; continue; }
+      if (character === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (character === "{") depth += 1;
+      else if (character === "}" && --depth === 0) {
+        try { rows.push(JSON.parse(trimmed.slice(start, index + 1))); } catch { /* malformed object */ }
+        start = -1;
+      }
+    }
+  }
+  return rows;
+}
+
+function qwenToolResultCallId(row: Record<string, unknown>, parts: Record<string, unknown>[]): string | null {
+  const functionResponse = parts.map((part) => objectField(part, "functionResponse")).find(Boolean);
+  const toolCallResult = objectField(row, "toolCallResult");
+  return stringField(functionResponse, "id") || stringField(toolCallResult, "callId") || stringField(toolCallResult, "id") || stringField(row, "uuid") || null;
+}
+
+const QWEN_ARTIFACT_SUBTYPES = new Set(["session_artifact_event", "session_artifact_snapshot"]);
+const QWEN_CONVERSATION_TYPES = new Set(["user", "assistant", "tool_result", "system"]);
+
+function qwenConversationLeaf(rows: Record<string, unknown>[]): Record<string, unknown> | undefined {
+  return [...rows].reverse().find((row) => {
+    const type = stringField(row, "type");
+    return QWEN_CONVERSATION_TYPES.has(type)
+      && Boolean(stringField(row, "uuid"))
+      && !(type === "system" && QWEN_ARTIFACT_SUBTYPES.has(stringField(row, "subtype")));
+  });
+}
+
+function qwenTokenBuckets(
+  usage: Record<string, unknown>,
+): Pick<TokenUsage, "inputTokens" | "outputTokens" | "cachedInputTokens" | "reasoningOutputTokens"> {
+  const promptTokens = Math.max(0, numberField(usage, "promptTokenCount"));
+  const candidateTokens = Math.max(0, numberField(usage, "candidatesTokenCount"));
+  const thoughtTokens = Math.max(0, numberField(usage, "thoughtsTokenCount"));
+  const rawTotalTokens = usage.totalTokenCount;
+  const hasAuthoritativeTotal = typeof rawTotalTokens === "number" && Number.isFinite(rawTotalTokens) && rawTotalTokens >= 0;
+  const cachedInputTokens = Math.min(Math.max(0, numberField(usage, "cachedContentTokenCount")), promptTokens);
+  const inputTokens = promptTokens - cachedInputTokens;
+  if (!hasAuthoritativeTotal) {
+    return { inputTokens, outputTokens: candidateTokens, cachedInputTokens, reasoningOutputTokens: thoughtTokens };
+  }
+  const targetTotalTokens = rawTotalTokens;
+  const boundedCachedInputTokens = Math.min(cachedInputTokens, targetTotalTokens);
+  const boundedInputTokens = Math.min(inputTokens, targetTotalTokens - boundedCachedInputTokens);
+  const outputBudget = targetTotalTokens - boundedInputTokens - boundedCachedInputTokens;
+  const reasoningOutputTokens = Math.min(thoughtTokens, outputBudget);
+  return { inputTokens: boundedInputTokens, outputTokens: outputBudget - reasoningOutputTokens, cachedInputTokens: boundedCachedInputTokens, reasoningOutputTokens };
+}
+
+function qwenTraces(rows: Record<string, unknown>[]): SessionTraceEvent[] {
+  const events: TraceEventDraft[] = [];
+  for (const row of rows) {
+    const rawParts = objectField(row, "message")?.parts;
+    const parts = Array.isArray(rawParts) ? rawParts : [];
+    for (const part of parts) {
+      if (!isRecord(part)) continue;
+      const call = objectField(part, "functionCall"); const result = objectField(part, "functionResponse");
+      if (row.type === "tool_result" && result) continue;
+      if (!call && !result && part.thought !== true) continue;
+      events.push({ kind: call ? "tool_call" : result ? "tool_result" : "event", source: "qwen", title: call ? `function: ${stringField(call, "name") || "call"}` : result ? `function result: ${stringField(result, "name") || "result"}` : "reasoning", detail: stringifyDetail(call || result || part), timestamp: timestampString(unknownField(row, "timestamp")), callId: stringField(call || result, "id") || null, eventType: call ? "qwen.functionCall" : result ? "qwen.functionResponse" : "qwen.thought", status: call ? "running" : result ? "completed" : "unknown" });
+    }
+    if (row.type === "tool_result") {
+      events.push({ kind: "tool_result", source: "qwen", title: "tool result", detail: stringifyDetail(row.toolCallResult || row.message || row), timestamp: timestampString(unknownField(row, "timestamp")), callId: qwenToolResultCallId(row, parts.filter(isRecord)), eventType: "qwen.tool_result", status: "completed" });
+    }
+  }
+  return dedupeTraceEvents(events);
+}
+
+function loadQwenFile(filePath: string, projectPath: string, stat = safeStat(filePath)): LoadedSession | null {
+  const rows = qwenRows(filePath).filter(isRecord); const byId = new Map<string, Record<string, unknown>>(); let chainInvalid = false;
+  for (const row of rows) { const uuid = stringField(row, "uuid"); if (!uuid) continue; if (byId.has(uuid)) chainInvalid = true; byId.set(uuid, row); }
+  const leaf = qwenConversationLeaf(rows); if (!leaf) return null;
+  const chain: Record<string, unknown>[] = []; const visited = new Set<string>(); let current: Record<string, unknown> | undefined = leaf;
+  while (current) { const uuid = stringField(current, "uuid"); if (!uuid || visited.has(uuid)) { chainInvalid = true; break; } visited.add(uuid); chain.push(current); const parentValue = unknownField(current, "parentUuid"); if (parentValue === null || parentValue === undefined || parentValue === "") { current = undefined; continue; } if (typeof parentValue !== "string") { chainInvalid = true; break; } current = byId.get(parentValue); if (!current) chainInvalid = true; }
+  const activeRows = chainInvalid ? rows : chain.reverse(); const messages = sourceMessages(activeRows, "qwen");
+  if (!messages.length) return null;
+  const tokenEntries = new Map<string, TokenUsageEvent>();
+  for (const row of activeRows) { const usage = objectField(row, "usageMetadata"); if (!usage) continue; const { inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens } = qwenTokenBuckets(usage); const dedupeKey = stringField(row, "uuid"); if (!dedupeKey) continue; putTokenEvent(tokenEntries, tokenEvent(timestampMs(unknownField(row, "timestamp")), dedupeKey, inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens)); }
+  const tokenEvents = [...tokenEntries.values()];
+  const rawId = path.basename(filePath, ".jsonl"); const question = cleanTitle(firstQuestion(messages));
+  const titleRecord = [...rows].reverse().find((row) => row.subtype === "custom_title" && typeof objectField(row, "systemPayload")?.customTitle === "string");
+  const title = stringField(objectField(titleRecord, "systemPayload"), "customTitle") || question || rawId;
+  const chainTimestamp = activeRows.map((row) => timestampMs(unknownField(row, "timestamp"))).find((timestamp) => timestamp > 0) || stat.mtimeMs;
+  const gitBranch = [...activeRows].reverse().map((row) => stringField(row, "gitBranch")).find(Boolean) || null;
+  return { session: createIndexedSession({ keyPrefix: "qwen", rawId, source: "qwen-code", projectPath: stringField(leaf, "cwd") || projectPath, filePath, originalTitle: title, firstQuestion: question, timestamp: chainTimestamp, gitBranch, tokenUsage: tokenUsageFromEvents(tokenEvents), stat }), messages, tokenEvents, traceEvents: qwenTraces(activeRows) };
+}
+
+export function* loadQwenCodeSessionsIterator(root: string, options: SessionLoadOptions = {}): Generator<LoadedSession> {
+  const projectsRoot = path.join(root, "projects"); let projects: string[] = [];
+  try { projects = fs.readdirSync(projectsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => path.join(projectsRoot, entry.name)); } catch { return; }
+  for (const project of projects) {
+    const chats = path.join(project, "chats");
+    const activeIds = new Set<string>();
+    for (const filePath of walkJsonlFiles(chats)) { if (path.relative(chats, filePath).split(/[\\/]+/u).includes("archive")) continue; activeIds.add(path.basename(filePath, ".jsonl")); const stat = safeStat(filePath); if (shouldSkipFile(options, filePath, stat, 0, "qwen-code")) continue; const loaded = loadQwenFile(filePath, project, stat); if (loaded) yield loaded; }
+    for (const filePath of walkJsonlFiles(path.join(chats, "archive"))) { const stat = safeStat(filePath); if (shouldSkipFile(options, filePath, stat, 0, "qwen-code")) continue; const loaded = loadQwenFile(filePath, project, stat); if (loaded && !activeIds.has(loaded.session.rawId)) yield loaded; }
+  }
+}
+
 function loadOpenClawSessionFile(filePath: string, stat = safeStat(filePath)): LoadedSession | null {
   const rows = readJsonl(filePath);
   if (rows.length === 0) return null;

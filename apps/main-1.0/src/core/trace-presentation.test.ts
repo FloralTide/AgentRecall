@@ -69,6 +69,7 @@ describe("tracePresentation", () => {
       expect(tracePresentation({ kind: "event", eventType }).category).toBe("collaboration");
     }
     expect(tracePresentation({ kind: "event", eventType: "codex.reasoning_summary" }).category).toBe("reasoning");
+    expect(tracePresentation({ kind: "event", eventType: "qwen.thought" }).category).toBe("reasoning");
     expect(tracePresentation({ kind: "event", eventType: "codex.context.compaction" }).category).toBe("context");
     expect(tracePresentation({ kind: "event", eventType: "codex.thread.settings" }).category).toBe("context");
     expect(tracePresentation({ kind: "tool_call", eventType: "codex.custom_tool" }).category).toBe("tool");

@@ -60,6 +60,19 @@ const QODER_DIR = ".qoder";
 const PI_SESSIONS_DIR = path.join(".pi", "agent", "sessions");
 const KIMI_CODE_DIR = ".kimi-code";
 const KIMI_LEGACY_DIR = ".kimi";
+const QWEN_DIR = ".qwen";
+
+function resolveQwenCodeRoot(homeDir: string, options: SessionLoadOptions): string {
+  if (options.homeDir !== undefined) return path.join(homeDir, QWEN_DIR);
+  const configured = process.env.QWEN_RUNTIME_DIR?.trim() || process.env.QWEN_HOME?.trim();
+  if (!configured) return path.join(homeDir, QWEN_DIR);
+  const expanded = configured === "~"
+    ? os.homedir()
+    : configured.startsWith("~/") || configured.startsWith("~\\")
+      ? path.join(os.homedir(), ...configured.slice(2).split(/[\\/]+/u).filter(Boolean))
+      : configured;
+  return path.resolve(expanded);
+}
 const TRAE_DIR_NAMES = [".trae", ".trae-cn"] as const;
 const CODEX_WORKSPACE_PLACEHOLDER = /^<[^>]+>$/u;
 
@@ -73,6 +86,7 @@ export interface SessionLoadOptions {
   homeDir?: string;
   includePi?: boolean;
   includeKimiCli?: boolean;
+  includeQwenCode?: boolean;
   includeTclaude?: boolean;
   includeTcodex?: boolean;
   includeCodeBuddyCli?: boolean;
@@ -1374,7 +1388,7 @@ function readGitBranchAt(gitPath: string): string | null {
 }
 
 function createIndexedSession(input: {
-  keyPrefix: "claude" | "codex" | "tclaude" | "tcodex" | "codebuddy" | "workbuddy" | "codewiz" | "openclaw" | "hermes" | "opencode" | "zcode" | "cursor" | "trae" | "qoder" | "pi" | "deepseek" | "kimi";
+  keyPrefix: "claude" | "codex" | "tclaude" | "tcodex" | "codebuddy" | "workbuddy" | "codewiz" | "openclaw" | "hermes" | "opencode" | "zcode" | "cursor" | "trae" | "qoder" | "pi" | "deepseek" | "kimi" | "qwen";
   rawId: string;
   source: SessionSource;
   projectPath: string;
@@ -1950,6 +1964,177 @@ function* loadKimiSessionsIterator(legacyRoot: string, codeRoot: string, options
     const indexEntry = indexed && path.resolve(indexed.sessionDir) === path.resolve(candidate.sessionDir) ? indexed : undefined;
     const loaded = loadKimiCodeSessionFile(candidate.filePath, codeRoot, indexEntry, state, stat);
     if (loaded) yield loaded;
+  }
+}
+
+function qwenJsonlRows(filePath: string): unknown[] {
+  let text = "";
+  try { text = fs.readFileSync(filePath, "utf8"); } catch { return []; }
+  const rows: unknown[] = [];
+  for (const line of text.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      rows.push(JSON.parse(trimmed));
+      continue;
+    } catch { /* a malformed or glued line may still contain valid objects */ }
+    let start = -1;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = 0; index < trimmed.length; index += 1) {
+      const character = trimmed[index];
+      if (start < 0) {
+        if (character === "{") { start = index; depth = 1; }
+        continue;
+      }
+      if (escaped) { escaped = false; continue; }
+      if (inString && character === "\\") { escaped = true; continue; }
+      if (character === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (character === "{") depth += 1;
+      else if (character === "}" && --depth === 0) {
+        try { rows.push(JSON.parse(trimmed.slice(start, index + 1))); } catch { /* malformed object */ }
+        start = -1;
+      }
+    }
+  }
+  return rows;
+}
+
+function qwenToolResultCallId(row: Record<string, unknown>, parts: Record<string, unknown>[]): string | null {
+  const functionResponse = parts.map((part) => objectField(part, "functionResponse")).find(Boolean);
+  const toolCallResult = objectField(row, "toolCallResult");
+  return stringField(functionResponse, "id") || stringField(toolCallResult, "callId") || stringField(toolCallResult, "id") || stringField(row, "uuid") || null;
+}
+
+const QWEN_ARTIFACT_SUBTYPES = new Set(["session_artifact_event", "session_artifact_snapshot"]);
+const QWEN_CONVERSATION_TYPES = new Set(["user", "assistant", "tool_result", "system"]);
+
+function qwenConversationLeaf(rows: Record<string, unknown>[]): Record<string, unknown> | undefined {
+  return [...rows].reverse().find((row) => {
+    const type = stringField(row, "type");
+    return QWEN_CONVERSATION_TYPES.has(type)
+      && Boolean(stringField(row, "uuid"))
+      && !(type === "system" && QWEN_ARTIFACT_SUBTYPES.has(stringField(row, "subtype")));
+  });
+}
+
+function qwenTokenBuckets(
+  usage: Record<string, unknown>,
+): Pick<TokenUsage, "inputTokens" | "outputTokens" | "cachedInputTokens" | "reasoningOutputTokens"> {
+  const promptTokens = Math.max(0, numberField(usage, "promptTokenCount"));
+  const candidateTokens = Math.max(0, numberField(usage, "candidatesTokenCount"));
+  const thoughtTokens = Math.max(0, numberField(usage, "thoughtsTokenCount"));
+  const rawTotalTokens = usage.totalTokenCount;
+  const hasAuthoritativeTotal = typeof rawTotalTokens === "number" && Number.isFinite(rawTotalTokens) && rawTotalTokens >= 0;
+  const cachedInputTokens = Math.min(Math.max(0, numberField(usage, "cachedContentTokenCount")), promptTokens);
+  const inputTokens = promptTokens - cachedInputTokens;
+  if (!hasAuthoritativeTotal) {
+    return { inputTokens, outputTokens: candidateTokens, cachedInputTokens, reasoningOutputTokens: thoughtTokens };
+  }
+  const targetTotalTokens = rawTotalTokens;
+  const boundedCachedInputTokens = Math.min(cachedInputTokens, targetTotalTokens);
+  const boundedInputTokens = Math.min(inputTokens, targetTotalTokens - boundedCachedInputTokens);
+  const outputBudget = targetTotalTokens - boundedInputTokens - boundedCachedInputTokens;
+  const reasoningOutputTokens = Math.min(thoughtTokens, outputBudget);
+  return { inputTokens: boundedInputTokens, outputTokens: outputBudget - reasoningOutputTokens, cachedInputTokens: boundedCachedInputTokens, reasoningOutputTokens };
+}
+
+function qwenTraceEvents(rows: Record<string, unknown>[]): SessionTraceEvent[] {
+  const events: TraceEventDraft[] = [];
+  for (const row of rows) {
+    const message = objectField(row, "message");
+    const parts = Array.isArray(message?.parts) ? message.parts : [];
+    for (const part of parts) {
+      if (!isRecord(part)) continue;
+      const call = objectField(part, "functionCall");
+      const result = objectField(part, "functionResponse");
+      const thought = part.thought === true;
+      if (row.type === "tool_result" && result) continue;
+      if (!call && !result && !thought) continue;
+      const value = call || result || part;
+      const title = call ? `function: ${stringField(call, "name") || "call"}` : result ? `function result: ${stringField(result, "name") || "result"}` : "reasoning";
+      events.push({ kind: call ? "tool_call" : result ? "tool_result" : "event", source: "qwen", title, detail: stringifyDetail(value), timestamp: timestampString(row.timestamp), callId: stringField(call || result, "id") || null, eventType: call ? "qwen.functionCall" : result ? "qwen.functionResponse" : "qwen.thought", status: call ? "running" : result ? "completed" : "unknown" });
+    }
+    if (row.type === "tool_result") {
+      events.push({ kind: "tool_result", source: "qwen", title: "tool result", detail: stringifyDetail(row.toolCallResult || row.message || row), timestamp: timestampString(row.timestamp), callId: qwenToolResultCallId(row, parts.filter(isRecord)), eventType: "qwen.tool_result", status: "completed" });
+    }
+  }
+  return dedupeTraceEvents(events);
+}
+
+function loadQwenCodeSessionFile(filePath: string, projectPath: string, stat: VirtualSessionFileStat): LoadedSession | null {
+  const parsedRows = qwenJsonlRows(filePath).filter(isRecord);
+  const records = new Map<string, Record<string, unknown>>();
+  let chainInvalid = false;
+  for (const row of parsedRows) {
+    const uuid = stringField(row, "uuid");
+    if (!uuid) continue;
+    if (records.has(uuid)) chainInvalid = true;
+    records.set(uuid, row);
+  }
+  const leaf = qwenConversationLeaf(parsedRows);
+  if (!leaf) return null;
+  const chain: Record<string, unknown>[] = [];
+  const visited = new Set<string>();
+  let current: Record<string, unknown> | undefined = leaf;
+  while (current) {
+    const uuid = stringField(current, "uuid");
+    if (!uuid || visited.has(uuid)) { chainInvalid = true; break; }
+    visited.add(uuid); chain.push(current);
+    const parentValue = unknownField(current, "parentUuid");
+    if (parentValue === null || parentValue === undefined || parentValue === "") { current = undefined; continue; }
+    if (typeof parentValue !== "string") { chainInvalid = true; break; }
+    const parent = parentValue;
+    current = records.get(parent);
+    if (!current) chainInvalid = true;
+  }
+  const activeRows = chainInvalid ? parsedRows : chain.reverse();
+  const messages = sourceMessages(activeRows, "qwen");
+  if (!messages.length) return null;
+  const usageEvents = new Map<string, TokenUsageEvent>();
+  for (const row of activeRows) {
+    const usage = objectField(row, "usageMetadata");
+    if (!usage) continue;
+    const { inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens } = qwenTokenBuckets(usage);
+    const dedupeKey = stringField(row, "uuid");
+    if (!dedupeKey) continue;
+    putTokenEvent(usageEvents, tokenEvent(timestampMs(row.timestamp), dedupeKey, inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens));
+  }
+  const tokenEvents = [...usageEvents.values()];
+  const rawId = path.basename(filePath, ".jsonl");
+  const firstQuestionText = cleanTitle(firstQuestion(messages));
+  const titleRecord = [...parsedRows].reverse().find((row) => row.subtype === "custom_title" && typeof objectField(row, "systemPayload")?.customTitle === "string");
+  const title = stringField(objectField(titleRecord, "systemPayload"), "customTitle") || firstQuestionText || rawId;
+  const chainTimestamp = activeRows.map((row) => timestampMs(row.timestamp)).find((timestamp) => timestamp > 0) || stat.mtimeMs;
+  const gitBranch = [...activeRows].reverse().map((row) => stringField(row, "gitBranch")).find(Boolean) || null;
+  return { session: createIndexedSession({ keyPrefix: "qwen", rawId, source: "qwen-code", projectPath: stringField(leaf, "cwd") || projectPath, filePath, originalTitle: title, firstQuestion: firstQuestionText, timestamp: chainTimestamp, gitBranch, tokenUsage: tokenUsageFromEvents(tokenEvents), stat }), messages, tokenEvents, traceEvents: qwenTraceEvents(activeRows) };
+}
+
+function* loadQwenCodeSessionsIterator(root: string, options: SessionLoadOptions): Generator<LoadedSession> {
+  const chatsRoot = path.join(root, "projects");
+  let projectDirs: string[] = [];
+  try { projectDirs = fs.readdirSync(chatsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => path.join(chatsRoot, entry.name)); } catch { return; }
+  for (const projectDir of projectDirs) {
+    const projectPath = projectDir;
+    const activeIds = new Set<string>();
+    const chats = path.join(projectDir, "chats");
+    for (const filePath of walkJsonlFiles(chats)) {
+      const relative = path.relative(chats, filePath);
+      if (relative.split(/[\\/]+/u).includes("archive")) continue;
+      activeIds.add(path.basename(filePath, ".jsonl"));
+      const stat = safeStat(filePath);
+      if (shouldSkipFile(options, filePath, stat)) continue;
+      const loaded = loadQwenCodeSessionFile(filePath, projectPath, stat);
+      if (loaded) yield loaded;
+    }
+    for (const filePath of walkJsonlFiles(path.join(chats, "archive"))) {
+      const stat = safeStat(filePath);
+      if (shouldSkipFile(options, filePath, stat)) continue;
+      const loaded = loadQwenCodeSessionFile(filePath, projectPath, stat);
+      if (loaded && !activeIds.has(loaded.session.rawId)) yield loaded;
+    }
   }
 }
 
@@ -4196,6 +4381,9 @@ export function* loadDefaultSessionsIterator(options: SessionLoadOptions = {}): 
     yield* loadPiSessionsIterator(path.join(homeDir, PI_SESSIONS_DIR), options);
   }
   if (options.includeKimiCli) yield* loadKimiSessionsIterator(path.join(homeDir, KIMI_LEGACY_DIR), resolveKimiCodeRoot(homeDir, options), options);
+  if (options.includeQwenCode) {
+    yield* loadQwenCodeSessionsIterator(resolveQwenCodeRoot(homeDir, options), options);
+  }
   if (options.includeOpenClaw) {
     yield* loadOpenClawSessionsIterator(path.join(homeDir, ".openclaw"), options);
     yield* loadOpenClawSessionsIterator(path.join(homeDir, ".clawdbot"), options);
@@ -4234,6 +4422,9 @@ export async function* loadDefaultSessionsAsyncIterator(options: SessionLoadOpti
     yield* loadPiSessionsIterator(path.join(homeDir, PI_SESSIONS_DIR), options);
   }
   if (options.includeKimiCli) yield* loadKimiSessionsIterator(path.join(homeDir, KIMI_LEGACY_DIR), resolveKimiCodeRoot(homeDir, options), options);
+  if (options.includeQwenCode) {
+    yield* loadQwenCodeSessionsIterator(resolveQwenCodeRoot(homeDir, options), options);
+  }
   if (options.includeOpenClaw) {
     yield* loadOpenClawSessionsIterator(path.join(homeDir, ".openclaw"), options);
     yield* loadOpenClawSessionsIterator(path.join(homeDir, ".clawdbot"), options);

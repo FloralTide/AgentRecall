@@ -209,6 +209,21 @@ describe("format adapters", () => {
     })).toMatchObject({ timestamp: "2026-07-31T02:39:01.181Z" });
   });
 
+  it("uses Qwen display text and keeps reasoning out of visible messages", () => {
+    expect(getAdapter("qwen-code").parseLine({
+      type: "user",
+      systemPayload: { displayText: "用户看到的问题" },
+      message: { parts: [{ text: "内部提示" }] },
+    })).toMatchObject({ role: "user", content: "用户看到的问题" });
+    expect(getAdapter("qwen").parseLine({
+      type: "assistant",
+      message: { parts: [{ thought: true, text: "推理" }, { text: "回答" }] },
+    })).toMatchObject({ role: "assistant", content: "回答" });
+    expect(getAdapter("qwen").parseLine({ type: "assistant", message: { text: "文本回退" } })).toMatchObject({ role: "assistant", content: "文本回退" });
+    expect(getAdapter("qwen").parseLine({ type: "assistant", message: { text: "不得回退的推理", parts: [{ thought: true, text: "推理" }] } })).toBeNull();
+    expect(getAdapter("qwen").parseLine({ type: "tool_result", message: { text: "工具输出" } })).toBeNull();
+  });
+
   it("skips the CodeBuddy CLI bootstrap 'code' root message", () => {
     // The CLI injects a root user message whose text is the literal launch
     // keyword "code"; it must not become the session title.

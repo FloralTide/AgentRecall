@@ -53,6 +53,7 @@ describe("SessionBulkDeleteService", () => {
       target("recent", { lastActivityAt: 500 }),
       target("pi", { source: "pi-cli" }),
       target("kimi", { source: "kimi-cli" }),
+      target("qwen", { source: "qwen-code" }),
       target("hermes", { source: "hermes" as SessionSource }),
       target("opencode", { source: "opencode-cli" }),
       target("codewiz", { source: "codewiz-cli" }),
@@ -65,7 +66,7 @@ describe("SessionBulkDeleteService", () => {
     });
     expect(preview.deletableCount).toBe(2);
     expect(preview.skipped.map((item) => item.reason)).toEqual([
-      "live", "favorite", "recent", "read-only",
+      "live", "favorite", "recent", "read-only", "read-only",
       "shared-database", "shared-database", "shared-database", "shared-database", "not-found",
     ]);
     expect(store.getSessionDeletionTargets).toHaveBeenCalledTimes(1);

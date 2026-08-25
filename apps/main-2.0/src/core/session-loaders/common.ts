@@ -34,6 +34,7 @@ export interface SessionLoadOptions {
   includeQoder?: boolean;
   includePi?: boolean;
   includeKimiCli?: boolean;
+  includeQwenCode?: boolean;
   includeDeepSeekCli?: boolean;
   cursorStateDbPath?: string;
   cursorWorkspacePathMap?: ReadonlyMap<string, string>;
@@ -315,6 +316,7 @@ export function createIndexedSession(input: {
     | "qoder"
     | "pi"
     | "kimi"
+    | "qwen"
     | "deepseek";
   rawId: string;
   source: SessionSource;

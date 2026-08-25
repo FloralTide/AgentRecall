@@ -92,6 +92,7 @@ export interface AppSettings {
   includeQoder: boolean;
   includePi: boolean;
   includeKimiCli: boolean;
+  includeQwenCode: boolean;
   includeDeepSeekCli: boolean;
   rulesSyncEnabled: boolean;
   memoriesSyncEnabled: boolean;
@@ -166,6 +167,7 @@ export const defaultSettings: AppSettings = {
   includeQoder: false,
   includePi: false,
   includeKimiCli: false,
+  includeQwenCode: false,
   includeDeepSeekCli: false,
   rulesSyncEnabled: false,
   memoriesSyncEnabled: false,
