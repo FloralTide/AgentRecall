@@ -151,6 +151,7 @@ function createSkill(
     markdown: "# Example",
     mtimeMs: 0,
     origin: { kind: "builtin", label: "AgentRecall" },
+    categoryId: "coding",
     installations: SKILL_INSTALL_TARGETS.map((target) => ({
       target,
       path: `C:/target/${target}`,

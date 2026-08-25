@@ -127,6 +127,7 @@ describe("AgentRecall bundled Skills", () => {
       id: "aihot",
       installId: "aihot",
       sourceUrl: "https://github.com/KKKKhazix/khazix-skills/tree/main/aihot",
+      categoryId: "explore",
     });
     expect(
       fs.existsSync(fileURLToPath(new URL("../../assets/bundled-skills/aihot/SKILL.md", import.meta.url))),
@@ -138,12 +139,34 @@ describe("AgentRecall bundled Skills", () => {
       id: "resume-optimization",
       installId: "resume-optimization",
       sourceUrl: "https://github.com/melodic-software/claude-code-plugins/tree/main/plugins/soft-skills/skills/resume-optimization",
+      categoryId: "writing",
     });
     const bundledSkillUrl = new URL("../../assets/bundled-skills/resume-optimization/", import.meta.url);
     expect(fs.existsSync(fileURLToPath(new URL("SKILL.md", bundledSkillUrl)))).toBe(true);
     expect(fs.existsSync(fileURLToPath(new URL("SKILL.zh.md", bundledSkillUrl)))).toBe(true);
     expect(fs.existsSync(fileURLToPath(new URL("metadata.json", bundledSkillUrl)))).toBe(true);
     expect(fs.existsSync(fileURLToPath(new URL("LICENSE", bundledSkillUrl)))).toBe(true);
+  });
+
+  it("ships the adapted DeepSeek Harness quality Skills with their licenses", () => {
+    const skills = [
+      { id: "dsh-code-review", categoryId: "coding" },
+      { id: "dsh-find-simplifications", categoryId: "coding" },
+      { id: "dsh-prose-standard", categoryId: "writing" },
+      { id: "dsh-trim-cot-leakage", categoryId: "writing" },
+    ];
+
+    for (const { id, categoryId } of skills) {
+      expect(AGENT_RECALL_BUILTIN_SKILLS).toContainEqual({
+        id,
+        installId: id,
+        sourceUrl: `https://github.com/deepseek-ai/deepseek-harness/tree/master/.agents/skills/${id}`,
+        categoryId,
+      });
+      const bundledSkillUrl = new URL(`../../assets/bundled-skills/${id}/`, import.meta.url);
+      expect(fs.existsSync(fileURLToPath(new URL("SKILL.md", bundledSkillUrl)))).toBe(true);
+      expect(fs.existsSync(fileURLToPath(new URL("LICENSE", bundledSkillUrl)))).toBe(true);
+    }
   });
 
   it("imports aihot into a fresh managed library with built-in origin metadata", () => {
@@ -167,6 +190,38 @@ describe("AgentRecall bundled Skills", () => {
       label: "AgentRecall",
       url: "https://github.com/melodic-software/claude-code-plugins/tree/main/plugins/soft-skills/skills/resume-optimization",
     });
+    expect(library.list().skills.find((skill) => skill.managedId === "dsh-trim-cot-leakage")?.origin).toEqual({
+      kind: "builtin",
+      label: "AgentRecall",
+      url: "https://github.com/deepseek-ai/deepseek-harness/tree/master/.agents/skills/dsh-trim-cot-leakage",
+    });
+    expect(library.list().skills.find((skill) => skill.managedId === "aihot")?.categoryId).toBe("explore");
+    expect(library.list().skills.find((skill) => skill.managedId === "resume-optimization")?.categoryId).toBe("writing");
+    expect(library.list().skills.find((skill) => skill.managedId === "dsh-code-review")?.categoryId).toBe("coding");
+    expect(library.list().skills.find((skill) => skill.managedId === "dsh-trim-cot-leakage")?.categoryId).toBe("writing");
+  });
+
+  it("adds the current category to existing built-in metadata without re-importing the Skill", () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(tmpdir(), "agent-recall-builtin-category-"));
+    temporaryDirectories.push(fixtureRoot);
+    const libraryRoot = path.join(fixtureRoot, "skills");
+    const library = new ManagedSkillLibrary({
+      libraryRoot,
+      homeDir: path.join(fixtureRoot, "home"),
+    });
+    const bundledRoot = fileURLToPath(new URL("../../assets/bundled-skills", import.meta.url));
+
+    library.ensureBuiltinSkills(bundledRoot);
+    const metadataPath = path.join(libraryRoot, ".metadata", "aihot.json");
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
+    const importedAt = metadata.importedAt;
+    delete metadata.categoryId;
+    fs.writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+
+    library.ensureBuiltinSkills(bundledRoot);
+
+    expect(library.list().skills.find((skill) => skill.managedId === "aihot")?.categoryId).toBe("explore");
+    expect((JSON.parse(fs.readFileSync(metadataPath, "utf8")) as Record<string, unknown>).importedAt).toBe(importedAt);
   });
 
   it("installs a managed Skill into the shared Codex agents directory", () => {

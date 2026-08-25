@@ -2,23 +2,28 @@ import { useMemo, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactElement } from "react";
 import { Check, ChevronDown, ChevronRight, Search } from "lucide-react";
 import type { ManagedSkill, ManagedSkillOriginKind, ManagedSkillTargetState } from "../../../../core/managed-skill-library";
+import { SKILL_CATEGORY_IDS, type SkillCategoryId } from "../../../../core/skill-categories";
 import type { RemoteSkillGroup } from "../../../../core/skill-sync";
 import { formatCompactNumber } from "../../format-count";
 import { localize, type LanguageMode } from "../../language";
 import { TARGET_LABELS } from "./skill-target-dialog";
 
 export type ManagedSkillOriginFilter = "all" | ManagedSkillOriginKind;
+export type ManagedSkillCategoryGroup = SkillCategoryId | "uncategorized";
+export type ManagedSkillCategoryFilter = "all" | ManagedSkillCategoryGroup;
 export type ManagedSkillSort = "usage" | "name" | "updated";
 
 export function filterManagedSkills(
   skills: ManagedSkill[],
   query: string,
+  categoryFilter: ManagedSkillCategoryFilter,
   originFilter: ManagedSkillOriginFilter,
   sort: ManagedSkillSort,
 ): ManagedSkill[] {
   const normalizedQuery = query.trim().toLowerCase();
   return skills
     .filter((skill) => {
+      if (categoryFilter !== "all" && (skill.categoryId ?? "uncategorized") !== categoryFilter) return false;
       if (originFilter !== "all" && skill.origin.kind !== originFilter) return false;
       if (!normalizedQuery) return true;
       return [skill.name, skill.description, skill.origin.label, skill.origin.source ?? ""]
@@ -40,11 +45,13 @@ export function SkillLibraryList({
   selectedId,
   selectedIds,
   query,
+  categoryFilter,
   originFilter,
   sort,
   loading,
   language,
   onQueryChange,
+  onCategoryFilterChange,
   onOriginFilterChange,
   onSortChange,
   onSelect,
@@ -59,11 +66,13 @@ export function SkillLibraryList({
   selectedId: string | null;
   selectedIds: Set<string>;
   query: string;
+  categoryFilter: ManagedSkillCategoryFilter;
   originFilter: ManagedSkillOriginFilter;
   sort: ManagedSkillSort;
   loading: boolean;
   language: LanguageMode;
   onQueryChange: (query: string) => void;
+  onCategoryFilterChange: (filter: ManagedSkillCategoryFilter) => void;
   onOriginFilterChange: (filter: ManagedSkillOriginFilter) => void;
   onSortChange: (sort: ManagedSkillSort) => void;
   onSelect: (managedId: string) => void;
@@ -75,25 +84,26 @@ export function SkillLibraryList({
   onNavigateToEval?: (skillName: string) => void;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<ManagedSkillOriginKind>>(() => new Set());
-  const toggleGroup = (kind: ManagedSkillOriginKind) => {
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<ManagedSkillCategoryGroup>>(() => new Set());
+  const toggleGroup = (category: ManagedSkillCategoryGroup) => {
     setCollapsedGroups((current) => {
       const next = new Set(current);
-      if (next.has(kind)) next.delete(kind);
-      else next.add(kind);
+      if (next.has(category)) next.delete(category);
+      else next.add(category);
       return next;
     });
   };
   const groups = useMemo(() => {
-    const byKind = new Map<ManagedSkillOriginKind, ManagedSkill[]>();
+    const byCategory = new Map<ManagedSkillCategoryGroup, ManagedSkill[]>();
     for (const skill of skills) {
-      const group = byKind.get(skill.origin.kind) ?? [];
+      const category = skill.categoryId ?? "uncategorized";
+      const group = byCategory.get(category) ?? [];
       group.push(skill);
-      byKind.set(skill.origin.kind, group);
+      byCategory.set(category, group);
     }
-    return [...byKind.entries()]
-      .sort((left, right) => originGroupOrder(left[0]) - originGroupOrder(right[0]))
-      .map(([kind, groupSkills]) => ({ kind, skills: groupSkills }));
+    return [...byCategory.entries()]
+      .sort((left, right) => categoryGroupOrder(left[0]) - categoryGroupOrder(right[0]))
+      .map(([category, groupSkills]) => ({ category, skills: groupSkills }));
   }, [skills]);
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (skills.length === 0) return;
@@ -121,7 +131,18 @@ export function SkillLibraryList({
             aria-label={l("Search managed Skills", "搜索 Skill 库")}
           />
         </label>
-        <div className="skill-library-filter-row">
+        <div className="skill-library-filter-row managed-skill-filter-row">
+          <select
+            value={categoryFilter}
+            onChange={(event) => onCategoryFilterChange(event.currentTarget.value as ManagedSkillCategoryFilter)}
+            aria-label={l("Filter by category", "按分类筛选")}
+          >
+            <option value="all">{l("All categories", "全部分类")}</option>
+            {SKILL_CATEGORY_IDS.map((category) => (
+              <option key={category} value={category}>{categoryLabel(category, language)}</option>
+            ))}
+            <option value="uncategorized">{categoryLabel("uncategorized", language)}</option>
+          </select>
           <select
             value={originFilter}
             onChange={(event) => onOriginFilterChange(event.currentTarget.value as ManagedSkillOriginFilter)}
@@ -160,17 +181,17 @@ export function SkillLibraryList({
           </div>
         ) : null}
         {groups.map((group) => {
-          const collapsed = collapsedGroups.has(group.kind);
+          const collapsed = collapsedGroups.has(group.category);
           return (
-            <section key={group.kind} className="skill-library-group">
+            <section key={group.category} className="skill-library-group">
               <button
                 type="button"
                 className="skill-library-group-header"
                 aria-expanded={!collapsed}
-                onClick={() => toggleGroup(group.kind)}
+                onClick={() => toggleGroup(group.category)}
               >
                 {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
-                <span>{groupLabel(group.kind, language)}</span>
+                <span>{categoryLabel(group.category, language)}</span>
                 <small>{formatCompactNumber(group.skills.length)}</small>
               </button>
               {!collapsed ? group.skills.map((skill) => {
@@ -281,18 +302,18 @@ export function originLabel(skill: ManagedSkill, language: LanguageMode): string
   return skill.origin.label || localize(language, "Local", "本机");
 }
 
-export function groupLabel(kind: ManagedSkillOriginKind, language: LanguageMode): string {
-  if (kind === "builtin") return localize(language, "Built-in", "内置");
-  if (kind === "skills-sh") return "skills.sh";
-  if (kind === "remote") return localize(language, "Cloud", "云端");
-  return localize(language, "Local", "本机");
+export function categoryLabel(category: ManagedSkillCategoryGroup, language: LanguageMode): string {
+  if (category === "coding") return localize(language, "Coding", "编程");
+  if (category === "writing") return localize(language, "Writing", "写作");
+  if (category === "productivity") return localize(language, "Productivity", "效率");
+  if (category === "explore") return localize(language, "Explore", "探索");
+  if (category === "life") return localize(language, "Life", "生活");
+  return localize(language, "Uncategorized", "未分类");
 }
 
-export function originGroupOrder(kind: ManagedSkillOriginKind): number {
-  if (kind === "builtin") return 0;
-  if (kind === "skills-sh") return 1;
-  if (kind === "remote") return 2;
-  return 3;
+export function categoryGroupOrder(category: ManagedSkillCategoryGroup): number {
+  const index = SKILL_CATEGORY_IDS.indexOf(category as SkillCategoryId);
+  return index === -1 ? SKILL_CATEGORY_IDS.length : index;
 }
 
 function installStateLabel(state: ManagedSkillTargetState, language: LanguageMode): string {
