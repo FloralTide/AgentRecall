@@ -1,6 +1,6 @@
 # Qoder CLI 本地会话
 
-<!-- release-target: v1 -->
+<!-- release-target: both -->
 
 ## 新增功能
 
