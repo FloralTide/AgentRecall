@@ -33,6 +33,7 @@ describe("SessionContextMenu migration", () => {
           revealLabel="Explorer"
           showMacActions={false}
           canResume={true}
+          canOpenApp={true}
           canStepcodeResume={false}
           canMigrate={true}
           onRename={vi.fn()}

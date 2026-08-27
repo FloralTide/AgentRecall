@@ -313,6 +313,7 @@ export function createIndexedSession(input: {
     | "cursor"
     | "trae"
     | "qoder"
+    | "qoder-cli"
     | "pi"
     | "kimi"
     | "deepseek";

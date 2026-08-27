@@ -8,6 +8,7 @@ import {
   sourceFilters,
   sourceMigrationAgent,
   sourceUiFamily,
+  supportsOpenAppSource,
   supportsResumeSource,
 } from "./session-ui";
 
@@ -42,6 +43,21 @@ describe("migrationTargetsForSession", () => {
     expect(supportsResumeSource(source)).toBe(false);
     expect(sourceMigrationAgent(source)).toBeNull();
     expect(migrationTargetsForSession(session, settings)).toEqual([]);
+  });
+});
+
+describe("supportsOpenAppSource", () => {
+  it("separates the Qoder IDE app from resumable Qoder CLI sessions", () => {
+    expect(supportsOpenAppSource("qoder")).toBe(true);
+    expect(supportsResumeSource("qoder")).toBe(false);
+    expect(supportsOpenAppSource("qoder-cli")).toBe(false);
+    expect(supportsResumeSource("qoder-cli")).toBe(true);
+  });
+
+  it("hides Open App for resumable sources that have no native app", () => {
+    expect(supportsResumeSource("codewiz-cli")).toBe(true);
+    expect(supportsOpenAppSource("codewiz-cli")).toBe(false);
+    expect(supportsOpenAppSource("unknown-cli" as never)).toBe(false);
   });
 });
 

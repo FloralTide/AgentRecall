@@ -834,7 +834,7 @@ function* loadQoderCliSessionsIterator(qoderDir: string, options: SessionLoadOpt
     if (shouldSkipFile(options, filePath, stat)) continue;
     const rows = readJsonl(filePath);
     if (!isQoderCliTranscript(rows)) continue;
-    const loaded = loadClaudeCliSessionRows(filePath, rows, { source: "qoder", keyPrefix: "qoder", stat });
+    const loaded = loadClaudeCliSessionRows(filePath, rows, { source: "qoder-cli", keyPrefix: "qoder-cli", stat });
     if (loaded?.messages.length) yield loaded;
   }
 }

@@ -160,7 +160,7 @@ export function loadClaudeCliSessionRows(
     cwd?: string;
     startedAt?: number;
     source?: SessionSource;
-    keyPrefix?: "claude" | "tclaude" | "stepcode-claude" | "qoder";
+    keyPrefix?: "claude" | "tclaude" | "stepcode-claude" | "qoder-cli";
     stepcodeAgent?: "claude" | "codex";
     stat?: VirtualSessionFileStat;
     isSubagent?: boolean;

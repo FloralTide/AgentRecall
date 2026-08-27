@@ -1,4 +1,4 @@
-import type { LiveSessionFamily, MigrationAgent, MigrationTarget, RemoteSessionAgent, SessionFormat, SessionSource } from "./types";
+import type { LiveSessionFamily, MigrationAgent, RemoteSessionAgent, ResumeTarget, SessionFormat, SessionSource } from "./types";
 
 export type OptionalSessionSourceSetting =
   | "includeStepcode"
@@ -60,9 +60,9 @@ export interface SessionSourceDescriptor {
   remoteCollectorOptional: boolean;
   liveFamily: LiveSessionFamily | null;
   migrationAgent: MigrationAgent | null;
-  resumeTarget: MigrationTarget | null;
+  resumeTarget: ResumeTarget | null;
   remoteFamily: "claude" | "codex" | "codebuddy" | "codewiz" | "qoder" | null;
-  nativeAppFamily: "claude" | "codex" | "codebuddy" | null;
+  nativeAppFamily: "claude" | "codex" | "codebuddy" | "qoder" | null;
   capabilities: SessionSourceCapabilities;
 }
 
@@ -175,8 +175,14 @@ export const SESSION_SOURCE_REGISTRY = {
   qoder: {
     id: "qoder", label: "Qoder", format: "qoder", family: "qoder", uiFamily: "other", statsGroup: null,
     optionalSetting: "includeQoder", pendingKey: "qoder", remoteCollectorOptional: true, liveFamily: "qoder", migrationAgent: null,
-    resumeTarget: null, remoteFamily: "qoder", nativeAppFamily: null,
-    capabilities: { live: true, resume: false, migrate: false, sessionSync: false, openApp: false },
+    resumeTarget: null, remoteFamily: "qoder", nativeAppFamily: "qoder",
+    capabilities: { live: true, resume: false, migrate: false, sessionSync: false, openApp: true },
+  },
+  "qoder-cli": {
+    id: "qoder-cli", label: "Qoder CLI", format: "claude", family: "qoder", uiFamily: "other", statsGroup: null,
+    optionalSetting: "includeQoder", pendingKey: "qoder", remoteCollectorOptional: false, liveFamily: "qoder", migrationAgent: null,
+    resumeTarget: "qoder", remoteFamily: null, nativeAppFamily: null,
+    capabilities: { live: true, resume: true, migrate: false, sessionSync: false, openApp: false },
   },
   "pi-cli": {
     id: "pi-cli", label: "Pi", format: "pi", family: "pi", uiFamily: "other", statsGroup: null,

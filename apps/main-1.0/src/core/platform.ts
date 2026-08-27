@@ -25,7 +25,7 @@ import {
   withPowerShellTerminalTitle,
 } from "./terminal-title";
 import { sessionSourceDescriptor } from "./session-sources";
-import type { MigrationTarget, SessionSearchResult, SessionSource } from "./types";
+import type { MigrationTarget, ResumeTarget, SessionSearchResult, SessionSource } from "./types";
 import { normalizeSummaryReasoningEffort, type SummaryReasoningEffort } from "./summary-settings";
 
 export { type TerminalChoice, defaultTerminalFor, normalizeTerminal, terminalOptionsFor } from "./terminal-options";
@@ -78,6 +78,7 @@ export interface AppSettings {
   tclaudeBinary: string;
   tcodexBinary: string;
   deepseekBinary: string;
+  qoderBinary: string;
   includeTclaude: boolean;
   includeTcodex: boolean;
   includeCodeBuddyCli: boolean;
@@ -152,6 +153,7 @@ export const defaultSettings: AppSettings = {
   tclaudeBinary: "tclaude",
   tcodexBinary: "tcodex",
   deepseekBinary: "dsh",
+  qoderBinary: "qoder",
   includeTclaude: false,
   includeTcodex: false,
   includeCodeBuddyCli: false,
@@ -249,7 +251,7 @@ function sourceDisplayName(source: SessionSource): string {
   return sessionSourceDescriptor(source).label;
 }
 
-export function migrationBinary(target: MigrationTarget, settings: AppSettings): string {
+export function migrationBinary(target: ResumeTarget, settings: AppSettings): string {
   if (target === "claude") return settings.claudeBinary;
   if (target === "tclaude") return settings.tclaudeBinary;
   if (target === "tcodex") return settings.tcodexBinary;
@@ -257,10 +259,11 @@ export function migrationBinary(target: MigrationTarget, settings: AppSettings):
   if (target === "codewiz") return settings.codeWizBinary;
   if (target === "cursor") return settings.cursorBinary;
   if (target === "deepseek") return settings.deepseekBinary;
+  if (target === "qoder") return settings.qoderBinary;
   return settings.codexBinary;
 }
 
-function migrationTargetDisplayName(target: MigrationTarget): string {
+function migrationTargetDisplayName(target: ResumeTarget): string {
   if (target === "claude") return "Claude";
   if (target === "tclaude") return "TClaude";
   if (target === "tcodex") return "TCodex";
@@ -268,10 +271,11 @@ function migrationTargetDisplayName(target: MigrationTarget): string {
   if (target === "codewiz") return "CodeWiz";
   if (target === "cursor") return "Cursor";
   if (target === "deepseek") return "DeepSeek Harness";
+  if (target === "qoder") return "Qoder";
   return "Codex";
 }
 
-function migrationResumeArgs(target: MigrationTarget, sessionId: string): string[] {
+function migrationResumeArgs(target: ResumeTarget, sessionId: string): string[] {
   return target === "codex" || target === "tcodex"
     ? ["resume", sessionId]
     : target === "codewiz"
@@ -326,11 +330,11 @@ const MIGRATION_CLI_VERSION_RULES: Record<MigrationTarget, VersionRule[]> = {
   deepseek: [{ label: "dsh", pattern: /^\s*v?(\d+\.\d+\.\d+)(?:-[\w.-]+)?\s*$/im, minimum: version(0, 0, 0) }],
 };
 
-function migrationTargetForResumeSource(source: SessionSource): MigrationTarget | null {
+function migrationTargetForResumeSource(source: SessionSource): ResumeTarget | null {
   return sessionSourceDescriptor(source).resumeTarget;
 }
 
-function legacyMigratedCodexProvider(session: SessionSearchResult, target: MigrationTarget): string | null {
+function legacyMigratedCodexProvider(session: SessionSearchResult, target: ResumeTarget): string | null {
   if (target !== "codex" && target !== "tcodex") return null;
   let descriptor: number | null = null;
   try {
@@ -1174,7 +1178,7 @@ export async function openNativeApp(
   if (!family) {
     throw new Error(`Native app opening is not configured for ${sourceDisplayName(session.source)} sessions yet.`);
   }
-  const appName = family === "claude" ? "Claude" : family === "codebuddy" ? "CodeBuddy CN" : "Codex";
+  const appName = family === "claude" ? "Claude" : family === "codebuddy" ? "CodeBuddy CN" : family === "qoder" ? "Qoder" : "Codex";
   if (platform === "darwin") {
     await (options.runProcess ?? runProcess)("/usr/bin/open", ["-a", appName]);
   }

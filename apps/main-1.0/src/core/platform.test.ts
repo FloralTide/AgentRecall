@@ -181,6 +181,20 @@ describe("native app opening", () => {
       openExternal: async () => { throw new Error("Codex is not installed"); },
     })).rejects.toThrow("Codex is not installed");
   });
+
+  it("launches the Qoder desktop app for Qoder IDE sessions but not for CLI ones", async () => {
+    const launched: string[][] = [];
+    const runProcess = async (file: string, args: string[]) => {
+      launched.push([file, ...args]);
+    };
+
+    await openNativeApp({ source: "qoder", rawId: "demo-app-1a2b3c4d/task-fe3" }, { platform: "darwin", runProcess });
+    expect(launched).toEqual([["/usr/bin/open", "-a", "Qoder"]]);
+
+    await expect(
+      openNativeApp({ source: "qoder-cli", rawId: "5a5f525e-99bc-4c95-9f03-de30ef8c9a32" }, { platform: "darwin", runProcess }),
+    ).rejects.toThrow("Native app opening is not configured for Qoder CLI sessions yet.");
+  });
 });
 
 describe("resume commands", () => {
@@ -250,6 +264,30 @@ describe("resume commands", () => {
 
     expect(getResumeCommand(session, defaultSettings, { platform: "darwin" })).toBe(
       "cd /repo && tcodex resume tcodex-1",
+    );
+  });
+
+  it("uses claude resume syntax with the qoder binary for Qoder CLI sessions", () => {
+    const session = {
+      source: "qoder-cli",
+      rawId: "5a5f525e-99bc-4c95-9f03-de30ef8c9a32",
+      projectPath: "/repo",
+    } as SessionSearchResult;
+
+    expect(getResumeCommand(session, defaultSettings, { platform: "darwin" })).toBe(
+      "cd /repo && qoder --resume 5a5f525e-99bc-4c95-9f03-de30ef8c9a32",
+    );
+  });
+
+  it("does not resume Qoder IDE sessions, whose ids are not CLI session ids", () => {
+    const session = {
+      source: "qoder",
+      rawId: "demo-app-1a2b3c4d/task-fe3",
+      projectPath: "/repo",
+    } as SessionSearchResult;
+
+    expect(() => getResumeCommand(session, defaultSettings, { platform: "darwin" })).toThrow(
+      "Resume is not supported for Qoder sessions yet.",
     );
   });
 

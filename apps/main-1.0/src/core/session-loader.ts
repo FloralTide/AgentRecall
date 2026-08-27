@@ -1374,7 +1374,7 @@ function readGitBranchAt(gitPath: string): string | null {
 }
 
 function createIndexedSession(input: {
-  keyPrefix: "claude" | "codex" | "tclaude" | "tcodex" | "codebuddy" | "workbuddy" | "codewiz" | "openclaw" | "hermes" | "opencode" | "zcode" | "cursor" | "trae" | "qoder" | "pi" | "deepseek" | "kimi";
+  keyPrefix: "claude" | "codex" | "tclaude" | "tcodex" | "codebuddy" | "workbuddy" | "codewiz" | "openclaw" | "hermes" | "opencode" | "zcode" | "cursor" | "trae" | "qoder" | "qoder-cli" | "pi" | "deepseek" | "kimi";
   rawId: string;
   source: SessionSource;
   projectPath: string;
@@ -2408,7 +2408,7 @@ export function loadClaudeCliSessionRows(
     cwd?: string;
     startedAt?: number;
     source?: SessionSource;
-    keyPrefix?: "claude" | "tclaude" | "qoder";
+    keyPrefix?: "claude" | "tclaude" | "qoder-cli";
     stat?: VirtualSessionFileStat;
     isSubagent?: boolean;
     parentSessionId?: string | null;
@@ -3084,7 +3084,7 @@ function* loadQoderCliSessionsIterator(qoderDir: string, options: SessionLoadOpt
     if (shouldSkipFile(options, filePath, stat)) continue;
     const rows = readJsonl(filePath);
     if (!isQoderCliTranscript(rows)) continue;
-    const loaded = loadClaudeCliSessionRows(filePath, rows, { source: "qoder", keyPrefix: "qoder", stat });
+    const loaded = loadClaudeCliSessionRows(filePath, rows, { source: "qoder-cli", keyPrefix: "qoder-cli", stat });
     if (loaded?.messages.length) yield loaded;
   }
 }

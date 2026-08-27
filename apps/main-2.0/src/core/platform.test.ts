@@ -5,6 +5,7 @@ import {
   getRemoteMigrationCliVersionCommand,
   getResumeCommand,
   mergeAppSettings,
+  openNativeApp,
 } from "./platform";
 
 describe("app settings", () => {
@@ -48,6 +49,38 @@ describe("app settings", () => {
     }, { platform: "darwin" })).toBe(
       "cd /repo && /opt/stepcode claude --resume native-claude-session",
     );
+  });
+
+  it("resumes Qoder CLI sessions with the qoder binary while leaving IDE tasks alone", () => {
+    const session = {
+      source: "qoder-cli",
+      rawId: "5a5f525e-99bc-4c95-9f03-de30ef8c9a32",
+      projectPath: "/repo",
+      environmentId: "local",
+      environmentKind: "local",
+    } as SessionSearchResult;
+
+    expect(getResumeCommand(session, defaultSettings, { platform: "darwin" })).toBe(
+      "cd /repo && qoder --resume 5a5f525e-99bc-4c95-9f03-de30ef8c9a32",
+    );
+    // Qoder IDE ids are `<slug>/<taskId>` pairs the CLI cannot take.
+    expect(() => getResumeCommand({ ...session, source: "qoder", rawId: "demo-app-1a2b/task-fe3" }, defaultSettings, {
+      platform: "darwin",
+    })).toThrow("Resume is not supported for Qoder sessions yet.");
+  });
+
+  it("opens the Qoder desktop app only for Qoder IDE sessions", async () => {
+    const launched: string[][] = [];
+    const runProcess = async (file: string, args: string[]) => {
+      launched.push([file, ...args]);
+    };
+
+    await openNativeApp({ source: "qoder", rawId: "demo-app-1a2b/task-fe3" }, { platform: "darwin", runProcess });
+    expect(launched).toEqual([["/usr/bin/open", "-a", "Qoder"]]);
+
+    await expect(
+      openNativeApp({ source: "qoder-cli", rawId: "5a5f525e-99bc-4c95-9f03-de30ef8c9a32" }, { platform: "darwin", runProcess }),
+    ).rejects.toThrow("Native app opening is not configured for Qoder CLI sessions yet.");
   });
 
   it("starts every summary source on the machine's own config directory", () => {

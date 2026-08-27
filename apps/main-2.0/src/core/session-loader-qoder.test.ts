@@ -52,8 +52,8 @@ describe("Qoder session loading", () => {
 
     expect(loaded).toHaveLength(1);
     expect(loaded[0].session).toMatchObject({
-      sessionKey: "qoder:5a5f525e-99bc-4c95-9f03-de30ef8c9a32",
-      source: "qoder",
+      sessionKey: "qoder-cli:5a5f525e-99bc-4c95-9f03-de30ef8c9a32",
+      source: "qoder-cli",
       projectPath: "/Users/me/demo-app",
       gitBranch: "main",
       firstQuestion: "Fix the login bug",
@@ -125,5 +125,6 @@ describe("Qoder session loading", () => {
     const loaded = loadQoderSessions(root);
 
     expect(loaded.map((entry) => entry.session.firstQuestion).sort()).toEqual(["CLI question", "IDE question"]);
+    expect(loaded.map((entry) => entry.session.source).sort()).toEqual(["qoder", "qoder-cli"]);
   });
 });

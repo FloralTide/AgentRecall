@@ -15,6 +15,7 @@ export type SessionSource =
   | "cursor-agent"
   | "trae"
   | "qoder"
+  | "qoder-cli"
   | "pi-cli"
   | "deepseek-cli"
   | "kimi-cli";
@@ -93,6 +94,9 @@ export interface SessionMessageEvent {
 
 export type MigrationAgent = "claude" | "codex" | "codebuddy" | "codewiz" | "cursor" | "deepseek";
 export type MigrationTarget = MigrationAgent | "tclaude" | "tcodex";
+// Resumable agents are a superset of migration destinations: Qoder CLI can
+// reopen its own sessions but is not a valid migration target.
+export type ResumeTarget = MigrationTarget | "qoder";
 export type RemoteSessionAgent = MigrationAgent | "hermes" | "pi";
 export type SessionMigrationStrategy = "complete" | "ai-compressed" | "locally-truncated";
 export type SessionMigrationStage = "reading" | "compressing" | "writing" | "indexing" | "launching";

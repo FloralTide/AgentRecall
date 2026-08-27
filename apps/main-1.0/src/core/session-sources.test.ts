@@ -26,6 +26,7 @@ const ALL_SOURCES = [
   "cursor-agent",
   "trae",
   "qoder",
+  "qoder-cli",
   "pi-cli",
   "kimi-cli",
   "deepseek-cli",
@@ -66,6 +67,7 @@ describe("session source capability registry", () => {
       "includeCursorAgent",
       "includeTrae",
       "includeQoder",
+      "includeQoder",
       "includePi",
       "includeKimiCli",
       "includeDeepSeekCli",
@@ -73,6 +75,19 @@ describe("session source capability registry", () => {
     expect(sessionSourceDescriptor("tclaude-cli")).toMatchObject({ liveFamily: "tclaude", migrationAgent: "claude" });
     expect(sessionSourceDescriptor("tcodex-cli")).toMatchObject({ liveFamily: "tcodex", migrationAgent: "codex" });
     expect(sessionSourceDescriptor("qoder")).toMatchObject({ format: "qoder", liveFamily: "qoder", remoteFamily: "qoder" });
+    // One toggle, two layouts: only the CLI hands its ids back to `qoder --resume`,
+    // and only the IDE has a desktop app to raise.
+    expect(sessionSourceDescriptor("qoder-cli")).toMatchObject({
+      format: "claude",
+      resumeTarget: "qoder",
+      nativeAppFamily: null,
+      capabilities: { resume: true, openApp: false },
+    });
+    expect(sessionSourceDescriptor("qoder")).toMatchObject({
+      resumeTarget: null,
+      nativeAppFamily: "qoder",
+      capabilities: { resume: false, openApp: true },
+    });
     expect(sessionSourceDescriptor("hermes")).toMatchObject({
       migrationAgent: null,
       capabilities: { live: true, resume: false, migrate: false, sessionSync: true, openApp: false },
