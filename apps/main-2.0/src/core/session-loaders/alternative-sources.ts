@@ -25,6 +25,7 @@ import type {
   TokenUsage,
   TokenUsageEvent,
 } from "../types";
+import { loadClaudeCliSessionRows } from "./claude-cli";
 import {
   createIndexedSession,
   createTokenUsage,
@@ -1013,6 +1014,11 @@ export function loadQoderSessions(qoderDir = path.join(os.homedir(), QODER_DIR))
 }
 
 export function* loadQoderSessionsIterator(qoderDir = path.join(os.homedir(), QODER_DIR), options: SessionLoadOptions = {}): Generator<LoadedSession> {
+  yield* loadQoderIdeSessionsIterator(qoderDir, options);
+  yield* loadQoderCliSessionsIterator(qoderDir, options);
+}
+
+function* loadQoderIdeSessionsIterator(qoderDir: string, options: SessionLoadOptions): Generator<LoadedSession> {
   const projectsDir = path.join(qoderDir, "cache", "projects");
   if (!fs.existsSync(projectsDir)) return;
   for (const projectEntry of fs.readdirSync(projectsDir, { withFileTypes: true })) {
@@ -1027,6 +1033,33 @@ export function* loadQoderSessionsIterator(qoderDir = path.join(os.homedir(), QO
       if (loaded) yield loaded;
     }
   }
+}
+
+/**
+ * The Qoder CLI stores transcripts under `projects/<slug>/`, either directly or
+ * inside a `transcript/` subdirectory; both layouts are written concurrently,
+ * so walk the tree instead of hardcoding either shape.
+ */
+function* loadQoderCliSessionsIterator(qoderDir: string, options: SessionLoadOptions): Generator<LoadedSession> {
+  const projectsDir = path.join(qoderDir, "projects");
+  if (!fs.existsSync(projectsDir)) return;
+  for (const filePath of walkJsonlFiles(projectsDir)) {
+    const stat = safeStat(filePath);
+    if (shouldSkipFile(options, filePath, stat)) continue;
+    const rows = readJsonl(filePath);
+    if (!isQoderCliTranscript(rows)) continue;
+    const loaded = loadClaudeCliSessionRows(filePath, rows, { source: "qoder", keyPrefix: "qoder", stat });
+    if (loaded?.messages.length) yield loaded;
+  }
+}
+
+/**
+ * Qoder CLI transcripts are Claude-Code-shaped: conversation turns are typed
+ * rows carrying a nested `message`. The Qoder IDE writes `{ role, message }`
+ * without a `type`, so requiring both fields keeps the two apart.
+ */
+function isQoderCliTranscript(rows: unknown[]): boolean {
+  return rows.some((row) => isRecord(row) && (row.type === "user" || row.type === "assistant") && isRecord(row.message));
 }
 
 function stripQoderSlugHash(slug: string): string {
